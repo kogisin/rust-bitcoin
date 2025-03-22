@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Rust-Bitcoin I/O Library
+//! # Rust Bitcoin I/O Library
 //!
 //! The [`std::io`] module is not exposed in `no-std` Rust so building `no-std` applications which
 //! require reading and writing objects via standard traits is not generally possible. Thus, this
@@ -46,7 +46,7 @@ pub use bridge::{FromStd, ToStd};
 #[rustfmt::skip]                // Keep public re-exports separate.
 pub use self::error::{Error, ErrorKind};
 #[cfg(feature = "hashes")]
-pub use self::hash::GeneralHashExt;
+pub use self::hash::hash_reader;
 
 /// Result type returned by functions in this crate.
 pub type Result<T> = core::result::Result<T, Error>;

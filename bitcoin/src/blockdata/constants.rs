@@ -6,8 +6,6 @@
 //! consensus code. In particular, it defines the genesis block and its
 //! single transaction.
 
-use hashes::sha256d;
-
 use crate::block::{self, Block, Checked};
 use crate::internal_macros::{impl_array_newtype, impl_array_newtype_stringify};
 use crate::locktime::absolute;
@@ -16,7 +14,7 @@ use crate::opcodes::all::*;
 use crate::pow::CompactTarget;
 use crate::transaction::{self, OutPoint, Transaction, TxIn, TxOut};
 use crate::witness::Witness;
-use crate::{script, Amount, BlockHash, Sequence, TestnetVersion};
+use crate::{script, Amount, BlockHash, BlockTime, Sequence, TestnetVersion};
 
 /// How many seconds between blocks we expect on average.
 pub const TARGET_BLOCK_SPACING: u32 = 600;
@@ -52,6 +50,8 @@ pub const SUBSIDY_HALVING_INTERVAL: u32 = 210_000;
 pub const MAX_SCRIPTNUM_VALUE: u32 = 0x80000000; // 2^31
 /// Number of blocks needed for an output from a coinbase transaction to be spendable.
 pub const COINBASE_MATURITY: u32 = 100;
+/// The maximum allowed size for a serialized block, in bytes (only for buffer size limits)
+pub const MAX_BLOCK_SERIALIZED_SIZE: usize = 4_000_000;
 
 // This is the 65 byte (uncompressed) pubkey used as the one-and-only output of the genesis transaction.
 //
@@ -122,8 +122,7 @@ fn bitcoin_genesis_tx(params: &Params) -> Transaction {
 pub fn genesis_block(params: impl AsRef<Params>) -> Block<Checked> {
     let params = params.as_ref();
     let transactions = vec![bitcoin_genesis_tx(params)];
-    let hash: sha256d::Hash = transactions[0].compute_txid().into();
-    let merkle_root: crate::TxMerkleNode = hash.into();
+    let merkle_root = block::compute_merkle_root(&transactions).expect("transactions is not empty");
     let witness_root = block::compute_witness_root(&transactions);
 
     match params.network {
@@ -132,7 +131,7 @@ pub fn genesis_block(params: impl AsRef<Params>) -> Block<Checked> {
                 version: block::Version::ONE,
                 prev_blockhash: BlockHash::GENESIS_PREVIOUS_BLOCK_HASH,
                 merkle_root,
-                time: 1231006505,
+                time: BlockTime::from_u32(1231006505),
                 bits: CompactTarget::from_consensus(0x1d00ffff),
                 nonce: 2083236893,
             },
@@ -144,7 +143,7 @@ pub fn genesis_block(params: impl AsRef<Params>) -> Block<Checked> {
                 version: block::Version::ONE,
                 prev_blockhash: BlockHash::GENESIS_PREVIOUS_BLOCK_HASH,
                 merkle_root,
-                time: 1296688602,
+                time: BlockTime::from_u32(1296688602),
                 bits: CompactTarget::from_consensus(0x1d00ffff),
                 nonce: 414098458,
             },
@@ -156,7 +155,7 @@ pub fn genesis_block(params: impl AsRef<Params>) -> Block<Checked> {
                 version: block::Version::ONE,
                 prev_blockhash: BlockHash::GENESIS_PREVIOUS_BLOCK_HASH,
                 merkle_root,
-                time: 1714777860,
+                time: BlockTime::from_u32(1714777860),
                 bits: CompactTarget::from_consensus(0x1d00ffff),
                 nonce: 393743547,
             },
@@ -168,7 +167,7 @@ pub fn genesis_block(params: impl AsRef<Params>) -> Block<Checked> {
                 version: block::Version::ONE,
                 prev_blockhash: BlockHash::GENESIS_PREVIOUS_BLOCK_HASH,
                 merkle_root,
-                time: 1598918400,
+                time: BlockTime::from_u32(1598918400),
                 bits: CompactTarget::from_consensus(0x1e0377ae),
                 nonce: 52613770,
             },
@@ -180,7 +179,7 @@ pub fn genesis_block(params: impl AsRef<Params>) -> Block<Checked> {
                 version: block::Version::ONE,
                 prev_blockhash: BlockHash::GENESIS_PREVIOUS_BLOCK_HASH,
                 merkle_root,
-                time: 1296688602,
+                time: BlockTime::from_u32(1296688602),
                 bits: CompactTarget::from_consensus(0x207fffff),
                 nonce: 2,
             },
@@ -320,7 +319,7 @@ mod test {
             "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
         );
 
-        assert_eq!(gen.header().time, 1231006505);
+        assert_eq!(gen.header().time, BlockTime::from_u32(1231006505));
         assert_eq!(gen.header().bits, CompactTarget::from_consensus(0x1d00ffff));
         assert_eq!(gen.header().nonce, 2083236893);
         assert_eq!(
@@ -338,7 +337,7 @@ mod test {
             gen.header().merkle_root.to_string(),
             "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
         );
-        assert_eq!(gen.header().time, 1296688602);
+        assert_eq!(gen.header().time, BlockTime::from_u32(1296688602));
         assert_eq!(gen.header().bits, CompactTarget::from_consensus(0x1d00ffff));
         assert_eq!(gen.header().nonce, 414098458);
         assert_eq!(
@@ -356,7 +355,7 @@ mod test {
             gen.header().merkle_root.to_string(),
             "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
         );
-        assert_eq!(gen.header().time, 1598918400);
+        assert_eq!(gen.header().time, BlockTime::from_u32(1598918400));
         assert_eq!(gen.header().bits, CompactTarget::from_consensus(0x1e0377ae));
         assert_eq!(gen.header().nonce, 52613770);
         assert_eq!(

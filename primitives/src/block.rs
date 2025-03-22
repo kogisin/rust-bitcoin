@@ -14,6 +14,7 @@ use core::marker::PhantomData;
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
 use hashes::{sha256d, HashEngine as _};
+use units::BlockTime;
 
 use crate::merkle_tree::TxMerkleNode;
 #[cfg(feature = "alloc")]
@@ -70,6 +71,7 @@ where
 #[cfg(feature = "alloc")]
 impl Block<Unchecked> {
     /// Constructs a new `Block` without doing any validation.
+    #[inline]
     pub fn new_unchecked(header: Header, transactions: Vec<Transaction>) -> Block<Unchecked> {
         Block { header, transactions, witness_root: None, marker: PhantomData::<Unchecked> }
     }
@@ -78,6 +80,7 @@ impl Block<Unchecked> {
     ///
     /// You should only use this function if you trust the block i.e., it comes from a trusted node.
     #[must_use]
+    #[inline]
     pub fn assume_checked(self, witness_root: Option<WitnessMerkleNode>) -> Block<Checked> {
         Block {
             header: self.header,
@@ -88,37 +91,44 @@ impl Block<Unchecked> {
     }
 
     /// Decomposes block into its constituent parts.
+    #[inline]
     pub fn into_parts(self) -> (Header, Vec<Transaction>) { (self.header, self.transactions) }
 }
 
 #[cfg(feature = "alloc")]
 impl Block<Checked> {
     /// Gets a reference to the block header.
+    #[inline]
     pub fn header(&self) -> &Header { &self.header }
 
     /// Gets a reference to the block's list of transactions.
+    #[inline]
     pub fn transactions(&self) -> &[Transaction] { &self.transactions }
 
     /// Returns the cached witness root if one is present.
     ///
     /// It is assumed that a block will have the witness root calculated and cached as part of the
     /// validation process.
+    #[inline]
     pub fn cached_witness_root(&self) -> Option<WitnessMerkleNode> { self.witness_root }
 }
 
 #[cfg(feature = "alloc")]
 impl<V: Validation> Block<V> {
     /// Returns the block hash.
+    #[inline]
     pub fn block_hash(&self) -> BlockHash { self.header.block_hash() }
 }
 
 #[cfg(feature = "alloc")]
 impl From<Block> for BlockHash {
+    #[inline]
     fn from(block: Block) -> BlockHash { block.block_hash() }
 }
 
 #[cfg(feature = "alloc")]
 impl From<&Block> for BlockHash {
+    #[inline]
     fn from(block: &Block) -> BlockHash { block.block_hash() }
 }
 
@@ -170,7 +180,7 @@ pub struct Header {
     /// The root hash of the Merkle tree of transactions in the block.
     pub merkle_root: TxMerkleNode,
     /// The timestamp of the block, as claimed by the miner.
-    pub time: u32,
+    pub time: BlockTime,
     /// The target value below which the blockhash must lie.
     pub bits: CompactTarget,
     /// The nonce, selected to obtain a low enough blockhash.
@@ -189,7 +199,7 @@ impl Header {
         engine.input(&self.version.to_consensus().to_le_bytes());
         engine.input(self.prev_blockhash.as_byte_array());
         engine.input(self.merkle_root.as_byte_array());
-        engine.input(&self.time.to_le_bytes());
+        engine.input(&self.time.to_u32().to_le_bytes());
         engine.input(&self.bits.to_consensus().to_le_bytes());
         engine.input(&self.nonce.to_le_bytes());
 
@@ -212,10 +222,12 @@ impl fmt::Debug for Header {
 }
 
 impl From<Header> for BlockHash {
+    #[inline]
     fn from(header: Header) -> BlockHash { header.block_hash() }
 }
 
 impl From<&Header> for BlockHash {
+    #[inline]
     fn from(header: &Header) -> BlockHash { header.block_hash() }
 }
 
@@ -263,13 +275,14 @@ impl Version {
     /// Returns the inner `i32` value.
     ///
     /// This is the data type used in consensus code in Bitcoin Core.
+    #[inline]
     pub fn to_consensus(self) -> i32 { self.0 }
 
     /// Checks whether the version number is signalling a soft fork at the given bit.
     ///
     /// A block is signalling for a soft fork under BIP-9 if the first 3 bits are `001` and
     /// the version bit for the specific soft fork is toggled on.
-    pub fn is_signalling_soft_fork(&self, bit: u8) -> bool {
+    pub fn is_signalling_soft_fork(self, bit: u8) -> bool {
         // Only bits [0, 28] inclusive are used for signalling.
         if bit > 28 {
             return false;
@@ -286,6 +299,7 @@ impl Version {
 }
 
 impl Default for Version {
+    #[inline]
     fn default() -> Version { Self::NO_SOFT_FORK_SIGNALLING }
 }
 
@@ -347,61 +361,175 @@ impl<'a> Arbitrary<'a> for Version {
 mod tests {
     use super::*;
 
+    fn dummy_header() -> Header {
+        Header {
+            version: Version::ONE,
+            prev_blockhash: BlockHash::from_byte_array([0x99; 32]),
+            merkle_root: TxMerkleNode::from_byte_array([0x77; 32]),
+            time: BlockTime::from(2),
+            bits: CompactTarget::from_consensus(3),
+            nonce: 4,
+        }
+    }
+
     #[test]
     fn version_is_not_signalling_with_invalid_bit() {
-        let arbitrary_version = Version::from_consensus(1234567890);
+        let arbitrary_version = Version::from_consensus(1_234_567_890);
         // The max bit number to signal is 28.
-        assert!(!Version::is_signalling_soft_fork(&arbitrary_version, 29));
+        assert!(!Version::is_signalling_soft_fork(arbitrary_version, 29));
     }
 
     #[test]
     fn version_is_not_signalling_when_use_version_bit_not_set() {
-        let version = Version::from_consensus(0b01000000000000000000000000000000);
+        let version = Version::from_consensus(0b0100_0000_0000_0000_0000_0000_0000_0000);
         // Top three bits must be 001 to signal.
-        assert!(!Version::is_signalling_soft_fork(&version, 1));
+        assert!(!Version::is_signalling_soft_fork(version, 1));
     }
 
     #[test]
     fn version_is_signalling() {
-        let version = Version::from_consensus(0b00100000000000000000000000000010);
-        assert!(Version::is_signalling_soft_fork(&version, 1));
-        let version = Version::from_consensus(0b00110000000000000000000000000000);
-        assert!(Version::is_signalling_soft_fork(&version, 28));
+        let version = Version::from_consensus(0b0010_0000_0000_0000_0000_0000_0000_0010);
+        assert!(Version::is_signalling_soft_fork(version, 1));
+        let version = Version::from_consensus(0b0011_0000_0000_0000_0000_0000_0000_0000);
+        assert!(Version::is_signalling_soft_fork(version, 28));
     }
 
     #[test]
     fn version_is_not_signalling() {
-        let version = Version::from_consensus(0b00100000000000000000000000000010);
-        assert!(!Version::is_signalling_soft_fork(&version, 0));
+        let version = Version::from_consensus(0b0010_0000_0000_0000_0000_0000_0000_0010);
+        assert!(!Version::is_signalling_soft_fork(version, 0));
     }
 
     #[test]
     fn version_to_consensus() {
-        let version = Version::from_consensus(1234567890);
-        assert_eq!(version.to_consensus(), 1234567890);
+        let version = Version::from_consensus(1_234_567_890);
+        assert_eq!(version.to_consensus(), 1_234_567_890);
+    }
+
+    #[test]
+    fn version_default() {
+        let version = Version::default();
+        assert_eq!(version.to_consensus(), Version::NO_SOFT_FORK_SIGNALLING.to_consensus());
     }
 
     // Check that the size of the header consensus serialization matches the const SIZE value
     #[test]
     fn header_size() {
-        let header = Header {
-            version: Version::ONE,
-            prev_blockhash: BlockHash::from_byte_array([0x99; 32]),
-            merkle_root: TxMerkleNode::from_byte_array([0x77; 32]),
-            time: 2,
-            bits: CompactTarget::from_consensus(3),
-            nonce: 4,
-        };
+        let header = dummy_header();
 
         // Calculate the size of the block header in bytes from the sum of the serialized lengths
         // it's fields: version, prev_blockhash, merkle_root, time, bits, nonce.
         let header_size = header.version.to_consensus().to_le_bytes().len()
             + header.prev_blockhash.as_byte_array().len()
             + header.merkle_root.as_byte_array().len()
-            + header.time.to_le_bytes().len()
+            + header.time.to_u32().to_le_bytes().len()
             + header.bits.to_consensus().to_le_bytes().len()
             + header.nonce.to_le_bytes().len();
 
         assert_eq!(header_size, Header::SIZE);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn block_new_unchecked() {
+        let header = dummy_header();
+        let transactions = vec![];
+        let block = Block::new_unchecked(header, transactions.clone());
+        assert_eq!(block.header, header);
+        assert_eq!(block.transactions, transactions);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn block_assume_checked() {
+        let header = dummy_header();
+        let transactions = vec![];
+        let block = Block::new_unchecked(header, transactions.clone());
+        let witness_root = Some(WitnessMerkleNode::from_byte_array([0x88; 32]));
+        let checked_block = block.assume_checked(witness_root);
+        assert_eq!(checked_block.header(), &header);
+        assert_eq!(checked_block.transactions(), &transactions);
+        assert_eq!(checked_block.cached_witness_root(), witness_root);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn block_into_parts() {
+        let header = dummy_header();
+        let transactions = vec![];
+        let block = Block::new_unchecked(header, transactions.clone());
+        let (block_header, block_transactions) = block.into_parts();
+        assert_eq!(block_header, header);
+        assert_eq!(block_transactions, transactions);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn block_cached_witness_root() {
+        let header = dummy_header();
+        let transactions = vec![];
+        let block = Block::new_unchecked(header, transactions);
+        let witness_root = Some(WitnessMerkleNode::from_byte_array([0x88; 32]));
+        let checked_block = block.assume_checked(witness_root);
+        assert_eq!(checked_block.cached_witness_root(), witness_root);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn block_block_hash() {
+        let header = dummy_header();
+        let transactions = vec![];
+        let block = Block::new_unchecked(header, transactions);
+        assert_eq!(block.block_hash(), header.block_hash());
+    }
+
+    #[test]
+    fn block_hash_from_header() {
+        let header = dummy_header();
+        let block_hash = header.block_hash();
+        assert_eq!(block_hash, BlockHash::from(header));
+    }
+
+    #[test]
+    fn block_hash_from_header_ref() {
+        let header = dummy_header();
+        let block_hash: BlockHash = BlockHash::from(&header);
+        assert_eq!(block_hash, header.block_hash());
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn block_hash_from_block() {
+        let header = dummy_header();
+        let transactions = vec![];
+        let block = Block::new_unchecked(header, transactions);
+        let block_hash: BlockHash = BlockHash::from(block);
+        assert_eq!(block_hash, header.block_hash());
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn block_hash_from_block_ref() {
+        let header = dummy_header();
+        let transactions = vec![];
+        let block = Block::new_unchecked(header, transactions);
+        let block_hash: BlockHash = BlockHash::from(&block);
+        assert_eq!(block_hash, header.block_hash());
+    }
+
+    #[test]
+    fn header_debug() {
+        let header = dummy_header();
+        let expected = format!(
+            "Header {{ block_hash: {:?}, version: {:?}, prev_blockhash: {:?}, merkle_root: {:?}, time: {:?}, bits: {:?}, nonce: {:?} }}",
+            header.block_hash(),
+            header.version,
+            header.prev_blockhash,
+            header.merkle_root,
+            header.time,
+            header.bits,
+            header.nonce
+        );
+        assert_eq!(format!("{:?}", header), expected);
     }
 }

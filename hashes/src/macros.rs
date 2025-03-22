@@ -158,19 +158,6 @@ macro_rules! hash_newtype {
             }
         }
 
-        impl $crate::_export::_core::convert::From<$hash> for $newtype {
-            fn from(inner: $hash) -> $newtype {
-                // Due to rust 1.22 we have to use this instead of simple `Self(inner)`
-                Self { 0: inner }
-            }
-        }
-
-        impl $crate::_export::_core::convert::From<$newtype> for $hash {
-            fn from(hashtype: $newtype) -> $hash {
-                hashtype.0
-            }
-        }
-
         impl $crate::Hash for $newtype {
             type Bytes = <$hash as $crate::Hash>::Bytes;
 
@@ -193,7 +180,7 @@ macro_rules! hash_newtype {
     };
 }
 
-/// Implements string functions using hex for a new type crated with [`crate::hash_newtype`] macro.
+/// Implements string functions using hex for a new type created with [`crate::hash_newtype`] macro.
 ///
 /// Implements:
 ///
@@ -210,7 +197,7 @@ macro_rules! impl_hex_for_newtype {
     }
 }
 
-/// Implements `fmt::Debug` using hex for a new type crated with [`crate::hash_newtype`] macro.
+/// Implements `fmt::Debug` using hex for a new type created with [`crate::hash_newtype`] macro.
 ///
 /// This is provided in case you do not want to use the `hex` feature.
 #[macro_export]

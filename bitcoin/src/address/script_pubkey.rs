@@ -2,6 +2,7 @@
 
 //! Bitcoin scriptPubkey script extensions.
 
+use internals::array::ArrayExt;
 use secp256k1::{Secp256k1, Verification};
 
 use crate::internal_macros::define_extension_trait;
@@ -10,7 +11,7 @@ use crate::key::{
     XOnlyPublicKey,
 };
 use crate::opcodes::all::*;
-use crate::script::witness_program::WitnessProgram;
+use crate::script::witness_program::{WitnessProgram, P2A_PROGRAM};
 use crate::script::witness_version::WitnessVersion;
 use crate::script::{
     self, Builder, PushBytes, RedeemScriptSizeError, Script, ScriptBuf, ScriptExt as _, ScriptHash,
@@ -99,14 +100,16 @@ define_extension_trait! {
     pub(crate) trait ScriptExtPrivate impl for Script {
         /// Returns the bytes of the (possibly invalid) public key if this script is P2PK.
         fn p2pk_pubkey_bytes(&self) -> Option<&[u8]> {
-            match self.len() {
-                67 if self.as_bytes()[0] == OP_PUSHBYTES_65.to_u8()
-                    && self.as_bytes()[66] == OP_CHECKSIG.to_u8() =>
-                    Some(&self.as_bytes()[1..66]),
-                35 if self.as_bytes()[0] == OP_PUSHBYTES_33.to_u8()
-                    && self.as_bytes()[34] == OP_CHECKSIG.to_u8() =>
-                    Some(&self.as_bytes()[1..34]),
-                _ => None,
+            if let Ok(bytes) = <&[u8; 67]>::try_from(self.as_bytes()) {
+                let (&first, bytes) = bytes.split_first::<66>();
+                let (&last, pubkey) = bytes.split_last::<65>();
+                (first == OP_PUSHBYTES_65.to_u8() && last == OP_CHECKSIG.to_u8()).then_some(pubkey)
+            } else if let Ok(bytes) = <&[u8; 35]>::try_from(self.as_bytes()) {
+                let (&first, bytes) = bytes.split_first::<34>();
+                let (&last, pubkey) = bytes.split_last::<33>();
+                (first == OP_PUSHBYTES_33.to_u8() && last == OP_CHECKSIG.to_u8()).then_some(pubkey)
+            } else {
+                None
             }
         }
     }
@@ -170,6 +173,11 @@ define_extension_trait! {
             new_witness_program_unchecked(WitnessVersion::V1, output_key.serialize())
         }
 
+        /// Generates pay to anchor output.
+        fn new_p2a() -> Self {
+            new_witness_program_unchecked(WitnessVersion::V1, P2A_PROGRAM)
+        }
+
         /// Generates P2WSH-type of scriptPubkey with a given [`WitnessProgram`].
         fn new_witness_program(witness_program: &WitnessProgram) -> Self {
             Builder::new()
@@ -183,14 +191,14 @@ define_extension_trait! {
 /// Generates P2WSH-type of scriptPubkey with a given [`WitnessVersion`] and the program bytes.
 /// Does not do any checks on version or program length.
 ///
-/// Convenience method used by `new_p2wpkh`, `new_p2wsh`, `new_p2tr`, and `new_p2tr_tweaked`.
+/// Convenience method used by `new_p2a`, `new_p2wpkh`, `new_p2wsh`, `new_p2tr`, and `new_p2tr_tweaked`.
 pub(super) fn new_witness_program_unchecked<T: AsRef<PushBytes>>(
     version: WitnessVersion,
     program: T,
 ) -> ScriptBuf {
     let program = program.as_ref();
     debug_assert!(program.len() >= 2 && program.len() <= 40);
-    // In SegWit v0, the program must be 20 or 32 bytes long.
+    // In SegWit v0, the program must be either 20 (P2WPKH) bytes or 32 (P2WSH) bytes long
     debug_assert!(version != WitnessVersion::V0 || program.len() == 20 || program.len() == 32);
     Builder::new().push_opcode(version.into()).push_slice(program).into_script()
 }

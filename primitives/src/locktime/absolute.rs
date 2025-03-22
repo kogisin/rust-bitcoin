@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Provides type [`LockTime`] that implements the logic around nLockTime/OP_CHECKLOCKTIMEVERIFY.
+//! Provides type [`LockTime`] that implements the logic around `nLockTime`/`OP_CHECKLOCKTIMEVERIFY`.
 //!
 //! There are two types of lock time: lock-by-blockheight and lock-by-blocktime, distinguished by
 //! whether `LockTime < LOCKTIME_THRESHOLD`.
@@ -22,7 +22,7 @@ pub use units::locktime::absolute::{ConversionError, Height, ParseHeightError, P
 /// since epoch).
 ///
 /// Used for transaction lock time (`nLockTime` in Bitcoin Core and [`Transaction::lock_time`]
-/// in this library) and also for the argument to opcode 'OP_CHECKLOCKTIMEVERIFY`.
+/// in this library) and also for the argument to opcode `OP_CHECKLOCKTIMEVERIFY`.
 ///
 /// ### Note on ordering
 ///
@@ -42,13 +42,13 @@ pub use units::locktime::absolute::{ConversionError, Height, ParseHeightError, P
 /// # Examples
 ///
 /// ```
-/// # use bitcoin_primitives::absolute::{self, LockTime::*};
+/// use bitcoin_primitives::absolute::{self, LockTime as L};
 /// # let n = absolute::LockTime::from_consensus(741521);          // n OP_CHECKLOCKTIMEVERIFY
 /// # let lock_time = absolute::LockTime::from_consensus(741521);  // nLockTime
 /// // To compare absolute lock times there are various `is_satisfied_*` methods, you may also use:
 /// let _is_satisfied = match (n, lock_time) {
-///     (Blocks(n), Blocks(lock_time)) => n <= lock_time,
-///     (Seconds(n), Seconds(lock_time)) => n <= lock_time,
+///     (L::Blocks(n), L::Blocks(lock_time)) => n <= lock_time,
+///     (L::Seconds(n), L::Seconds(lock_time)) => n <= lock_time,
 ///     _ => panic!("handle invalid comparison error"),
 /// };
 /// ```
@@ -102,6 +102,7 @@ impl LockTime {
     ///
     /// # Ok::<_, units::parse::PrefixedHexError>(())
     /// ```
+    #[inline]
     pub fn from_hex(s: &str) -> Result<Self, PrefixedHexError> {
         let lock_time = parse::hex_u32_prefixed(s)?;
         Ok(Self::from_consensus(lock_time))
@@ -119,12 +120,13 @@ impl LockTime {
     ///
     /// # Ok::<_, units::parse::UnprefixedHexError>(())
     /// ```
+    #[inline]
     pub fn from_unprefixed_hex(s: &str) -> Result<Self, UnprefixedHexError> {
         let lock_time = parse::hex_u32_unprefixed(s)?;
         Ok(Self::from_consensus(lock_time))
     }
 
-    /// Constructs a new `LockTime` from an nLockTime value or the argument to OP_CHEKCLOCKTIMEVERIFY.
+    /// Constructs a new `LockTime` from an `nLockTime` value or the argument to `OP_CHEKCLOCKTIMEVERIFY`.
     ///
     /// # Examples
     ///
@@ -136,6 +138,7 @@ impl LockTime {
     /// let lock_time = absolute::LockTime::from_consensus(n_lock_time);
     /// assert_eq!(lock_time.to_consensus_u32(), n_lock_time);
     #[inline]
+    #[allow(clippy::missing_panics_doc)]
     pub fn from_consensus(n: u32) -> Self {
         if units::locktime::absolute::is_block_height(n) {
             Self::Blocks(Height::from_consensus(n).expect("n is valid"))
@@ -195,7 +198,7 @@ impl LockTime {
 
     /// Returns true if both lock times use the same unit i.e., both height based or both time based.
     #[inline]
-    pub const fn is_same_unit(&self, other: LockTime) -> bool {
+    pub const fn is_same_unit(self, other: LockTime) -> bool {
         matches!(
             (self, other),
             (LockTime::Blocks(_), LockTime::Blocks(_))
@@ -205,11 +208,11 @@ impl LockTime {
 
     /// Returns true if this lock time value is a block height.
     #[inline]
-    pub const fn is_block_height(&self) -> bool { matches!(*self, LockTime::Blocks(_)) }
+    pub const fn is_block_height(self) -> bool { matches!(self, LockTime::Blocks(_)) }
 
     /// Returns true if this lock time value is a block time (UNIX timestamp).
     #[inline]
-    pub const fn is_block_time(&self) -> bool { !self.is_block_height() }
+    pub const fn is_block_time(self) -> bool { !self.is_block_height() }
 
     /// Returns true if this timelock constraint is satisfied by the respective `height`/`time`.
     ///
@@ -217,7 +220,7 @@ impl LockTime {
     /// blocktime based lock it is checked against `time`.
     ///
     /// A 'timelock constraint' refers to the `n` from `n OP_CHEKCLOCKTIMEVERIFY`, this constraint
-    /// is satisfied if a transaction with nLockTime ([`Transaction::lock_time`]) set to
+    /// is satisfied if a transaction with `nLockTime` ([`Transaction::lock_time`]) set to
     /// `height`/`time` is valid.
     ///
     /// # Examples
@@ -234,12 +237,12 @@ impl LockTime {
     /// }
     /// ````
     #[inline]
-    pub fn is_satisfied_by(&self, height: Height, time: Time) -> bool {
-        use LockTime::*;
+    pub fn is_satisfied_by(self, height: Height, time: Time) -> bool {
+        use LockTime as L;
 
-        match *self {
-            Blocks(n) => n <= height,
-            Seconds(n) => n <= time,
+        match self {
+            L::Blocks(n) => n <= height,
+            L::Seconds(n) => n <= time,
         }
     }
 
@@ -263,18 +266,18 @@ impl LockTime {
     /// assert!(lock_time.is_implied_by(check));
     /// ```
     #[inline]
-    pub fn is_implied_by(&self, other: LockTime) -> bool {
-        use LockTime::*;
+    pub fn is_implied_by(self, other: LockTime) -> bool {
+        use LockTime as L;
 
-        match (*self, other) {
-            (Blocks(this), Blocks(other)) => this <= other,
-            (Seconds(this), Seconds(other)) => this <= other,
+        match (self, other) {
+            (L::Blocks(this), L::Blocks(other)) => this <= other,
+            (L::Seconds(this), L::Seconds(other)) => this <= other,
             _ => false, // Not the same units.
         }
     }
 
     /// Returns the inner `u32` value. This is the value used when creating this `LockTime`
-    /// i.e., `n OP_CHECKLOCKTIMEVERIFY` or nLockTime.
+    /// i.e., `n OP_CHECKLOCKTIMEVERIFY` or `nLockTime`.
     ///
     /// # Warning
     ///
@@ -285,13 +288,13 @@ impl LockTime {
     /// # Examples
     ///
     /// ```rust
-    /// # use bitcoin_primitives::absolute::{self, LockTime::*};
+    /// use bitcoin_primitives::absolute::{self, LockTime as L};
     /// # let n = absolute::LockTime::from_consensus(741521);  // n OP_CHECKLOCKTIMEVERIFY
     /// # let lock_time = absolute::LockTime::from_consensus(741521 + 1);  // nLockTime
     ///
     /// let _is_satisfied = match (n, lock_time) {
-    ///     (Blocks(n), Blocks(lock_time)) => n <= lock_time,
-    ///     (Seconds(n), Seconds(lock_time)) => n <= lock_time,
+    ///     (L::Blocks(n), L::Blocks(lock_time)) => n <= lock_time,
+    ///     (L::Seconds(n), L::Seconds(lock_time)) => n <= lock_time,
     ///     _ => panic!("invalid comparison"),
     /// };
     ///
@@ -320,29 +323,30 @@ impl From<Time> for LockTime {
 }
 
 impl fmt::Debug for LockTime {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use LockTime::*;
+        use LockTime as L;
 
         match *self {
-            Blocks(ref h) => write!(f, "{} blocks", h),
-            Seconds(ref t) => write!(f, "{} seconds", t),
+            L::Blocks(ref h) => write!(f, "{} blocks", h),
+            L::Seconds(ref t) => write!(f, "{} seconds", t),
         }
     }
 }
 
 impl fmt::Display for LockTime {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use LockTime::*;
+        use LockTime as L;
 
         if f.alternate() {
             match *self {
-                Blocks(ref h) => write!(f, "block-height {}", h),
-                Seconds(ref t) => write!(f, "block-time {} (seconds since epoch)", t),
+                L::Blocks(ref h) => write!(f, "block-height {}", h),
+                L::Seconds(ref t) => write!(f, "block-time {} (seconds since epoch)", t),
             }
         } else {
             match *self {
-                Blocks(ref h) => fmt::Display::fmt(h, f),
-                Seconds(ref t) => fmt::Display::fmt(t, f),
+                L::Blocks(ref h) => fmt::Display::fmt(h, f),
+                L::Seconds(ref t) => fmt::Display::fmt(t, f),
             }
         }
     }
@@ -401,43 +405,66 @@ mod tests {
 
     #[test]
     fn display_and_alternate() {
-        let lock_by_height = LockTime::from_consensus(741521);
-        let s = format!("{}", lock_by_height);
-        assert_eq!(&s, "741521");
+        let lock_by_height = LockTime::from_height(741_521).unwrap();
+        let lock_by_time = LockTime::from_time(1_653_195_600).unwrap(); // May 22nd 2022, 5am UTC.
 
-        let got = format!("{:#}", lock_by_height);
-        assert_eq!(got, "block-height 741521");
+        assert_eq!(format!("{}", lock_by_height), "741521");
+        assert_eq!(format!("{:#}", lock_by_height), "block-height 741521");
+        assert!(!format!("{:?}", lock_by_height).is_empty());
+
+        assert_eq!(format!("{}", lock_by_time), "1653195600");
+        assert_eq!(format!("{:#}", lock_by_time), "block-time 1653195600 (seconds since epoch)");
+        assert!(!format!("{:?}", lock_by_time).is_empty());
+    }
+
+    #[test]
+    fn roundtrips() {
+        let lock_by_height = LockTime::from_consensus(741_521);
+        let lock_by_time = LockTime::from_consensus(1_653_195_600);
+
+        assert_eq!(lock_by_height.to_consensus_u32(), 741_521);
+        assert_eq!(lock_by_time.to_consensus_u32(), 1_653_195_600);
     }
 
     #[test]
     fn lock_time_from_hex_lower() {
         let lock_by_time = LockTime::from_hex("0x6289c350").unwrap();
-        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289C350));
+        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289_C350));
     }
 
     #[test]
     fn lock_time_from_hex_upper() {
         let lock_by_time = LockTime::from_hex("0X6289C350").unwrap();
-        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289C350));
+        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289_C350));
     }
 
     #[test]
     fn lock_time_from_unprefixed_hex_lower() {
         let lock_by_time = LockTime::from_unprefixed_hex("6289c350").unwrap();
-        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289C350));
+        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289_C350));
     }
 
     #[test]
     fn lock_time_from_unprefixed_hex_upper() {
         let lock_by_time = LockTime::from_unprefixed_hex("6289C350").unwrap();
-        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289C350));
+        assert_eq!(lock_by_time, LockTime::from_consensus(0x6289_C350));
     }
 
     #[test]
-    fn lock_time_from_invalid_hex_should_err() {
-        let hex = "0xzb93";
-        let result = LockTime::from_hex(hex);
-        assert!(result.is_err());
+    fn invalid_hex() {
+        assert!(LockTime::from_hex("0xzb93").is_err());
+        assert!(LockTime::from_unprefixed_hex("zb93").is_err());
+    }
+
+    #[test]
+    fn invalid_locktime_type() {
+        assert!(LockTime::from_height(499_999_999).is_ok()); // Below the threshold.
+        assert!(LockTime::from_height(500_000_000).is_err()); // The threshold.
+        assert!(LockTime::from_height(500_000_001).is_err()); // Above the threshold.
+
+        assert!(LockTime::from_time(499_999_999).is_err()); // Below the threshold.
+        assert!(LockTime::from_time(500_000_000).is_ok()); // The threshold.
+        assert!(LockTime::from_time(500_000_001).is_ok()); // Above the threshold.
     }
 
     #[test]
@@ -447,7 +474,7 @@ mod tests {
         assert!(lock_by_height.is_block_height());
         assert!(!lock_by_height.is_block_time());
 
-        let t: u32 = 1653195600; // May 22nd, 5am UTC.
+        let t: u32 = 1_653_195_600; // May 22nd, 5am UTC.
         let lock_by_time = LockTime::from_consensus(t);
 
         assert!(!lock_by_time.is_block_height());
@@ -456,39 +483,39 @@ mod tests {
         // Test is_same_unit() logic
         assert!(lock_by_height.is_same_unit(LockTime::from_consensus(800_000)));
         assert!(!lock_by_height.is_same_unit(lock_by_time));
-        assert!(lock_by_time.is_same_unit(LockTime::from_consensus(1653282000)));
+        assert!(lock_by_time.is_same_unit(LockTime::from_consensus(1_653_282_000)));
         assert!(!lock_by_time.is_same_unit(lock_by_height));
     }
 
     #[test]
     fn satisfied_by_height() {
-        let lock_by_height = LockTime::from_consensus(750_000);
+        let height_below = Height::from_consensus(700_000).unwrap();
+        let height = Height::from_consensus(750_000).unwrap();
+        let height_above = Height::from_consensus(800_000).unwrap();
 
-        let height_same = Height::from_consensus(750_000).expect("failed to parse height");
-        let height_above = Height::from_consensus(800_000).expect("failed to parse height");
-        let height_below = Height::from_consensus(700_000).expect("failed to parse height");
+        let lock_by_height = LockTime::from(height);
 
-        let t: u32 = 1653195600; // May 22nd, 5am UTC.
-        let time = Time::from_consensus(t).expect("invalid time value");
+        let t: u32 = 1_653_195_600; // May 22nd, 5am UTC.
+        let time = Time::from_consensus(t).unwrap();
 
-        assert!(lock_by_height.is_satisfied_by(height_same, time));
-        assert!(lock_by_height.is_satisfied_by(height_above, time));
         assert!(!lock_by_height.is_satisfied_by(height_below, time));
+        assert!(lock_by_height.is_satisfied_by(height, time));
+        assert!(lock_by_height.is_satisfied_by(height_above, time));
     }
 
     #[test]
     fn satisfied_by_time() {
-        let lock_by_time = LockTime::from_consensus(1653195600); // May 22nd 2022, 5am UTC.
+        let time_before = Time::from_consensus(1_653_109_200).unwrap(); // "May 21th 2022, 5am UTC.
+        let time = Time::from_consensus(1_653_195_600).unwrap(); // "May 22nd 2022, 5am UTC.
+        let time_after = Time::from_consensus(1_653_282_000).unwrap(); // "May 23rd 2022, 5am UTC.
 
-        let time_same = Time::from_consensus(1653195600).expect("May 22nd 2022, 5am UTC");
-        let time_after = Time::from_consensus(1653282000).expect("May 23rd 2022, 5am UTC");
-        let time_before = Time::from_consensus(1653109200).expect("May 21th 2022, 5am UTC");
+        let lock_by_time = LockTime::from(time);
 
-        let height = Height::from_consensus(800_000).expect("failed to parse height");
+        let height = Height::from_consensus(800_000).unwrap();
 
-        assert!(lock_by_time.is_satisfied_by(height, time_same));
-        assert!(lock_by_time.is_satisfied_by(height, time_after));
         assert!(!lock_by_time.is_satisfied_by(height, time_before));
+        assert!(lock_by_time.is_satisfied_by(height, time));
+        assert!(lock_by_time.is_satisfied_by(height, time_after));
     }
 
     #[test]
@@ -502,17 +529,17 @@ mod tests {
 
     #[test]
     fn time_correctly_implies() {
-        let t: u32 = 1700000005;
+        let t: u32 = 1_700_000_005;
         let lock_by_time = LockTime::from_consensus(t);
 
-        assert!(!lock_by_time.is_implied_by(LockTime::from_consensus(1700000004)));
-        assert!(lock_by_time.is_implied_by(LockTime::from_consensus(1700000005)));
-        assert!(lock_by_time.is_implied_by(LockTime::from_consensus(1700000006)));
+        assert!(!lock_by_time.is_implied_by(LockTime::from_consensus(1_700_000_004)));
+        assert!(lock_by_time.is_implied_by(LockTime::from_consensus(1_700_000_005)));
+        assert!(lock_by_time.is_implied_by(LockTime::from_consensus(1_700_000_006)));
     }
 
     #[test]
     fn incorrect_units_do_not_imply() {
         let lock_by_height = LockTime::from_consensus(750_005);
-        assert!(!lock_by_height.is_implied_by(LockTime::from_consensus(1700000004)));
+        assert!(!lock_by_height.is_implied_by(LockTime::from_consensus(1_700_000_004)));
     }
 }

@@ -3,18 +3,19 @@
 //! Demonstrate creating a transaction that spends to and from p2wpkh outputs.
 
 use bitcoin::address::script_pubkey::ScriptBufExt as _;
+use bitcoin::key::WPubkeyHash;
 use bitcoin::locktime::absolute;
 use bitcoin::secp256k1::{rand, Message, Secp256k1, SecretKey, Signing};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::witness::WitnessExt as _;
 use bitcoin::{
     transaction, Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
-    Txid, WPubkeyHash, Witness,
+    Txid, Witness,
 };
 
-const DUMMY_UTXO_AMOUNT: Amount = Amount::from_sat_unchecked(20_000_000);
-const SPEND_AMOUNT: Amount = Amount::from_sat_unchecked(5_000_000);
-const CHANGE_AMOUNT: Amount = Amount::from_sat_unchecked(14_999_000); // 1000 sat fee.
+const DUMMY_UTXO_AMOUNT: Amount = Amount::from_sat_u32(20_000_000);
+const SPEND_AMOUNT: Amount = Amount::from_sat_u32(5_000_000);
+const CHANGE_AMOUNT: Amount = Amount::from_sat_u32(14_999_000); // 1000 sat fee.
 
 fn main() {
     let secp = Secp256k1::new();

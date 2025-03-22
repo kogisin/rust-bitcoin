@@ -10,6 +10,8 @@ mod tests;
 
 use core::{cmp, convert, fmt};
 
+use internals::slice::SliceExt;
+
 use crate::{incomplete_block_len, sha256d, HashEngine as _};
 #[cfg(doc)]
 use crate::{sha256t, sha256t_tag};
@@ -79,8 +81,9 @@ impl HashEngine {
     /// Please see docs on [`Midstate`] before using this function.
     pub fn from_midstate(midstate: Midstate) -> HashEngine {
         let mut ret = [0; 8];
-        for (ret_val, midstate_bytes) in ret.iter_mut().zip(midstate.as_ref().chunks_exact(4)) {
-            *ret_val = u32::from_be_bytes(midstate_bytes.try_into().expect("4 byte slice"));
+        for (ret_val, midstate_bytes) in ret.iter_mut().zip(midstate.as_ref().bitcoin_as_chunks().0)
+        {
+            *ret_val = u32::from_be_bytes(*midstate_bytes);
         }
 
         HashEngine { buffer: [0; BLOCK_SIZE], h: ret, bytes_hashed: midstate.bytes_hashed }
@@ -108,8 +111,8 @@ impl HashEngine {
     #[cfg(not(hashes_fuzz))]
     fn midstate_unchecked(&self) -> Midstate {
         let mut ret = [0; 32];
-        for (val, ret_bytes) in self.h.iter().zip(ret.chunks_exact_mut(4)) {
-            ret_bytes.copy_from_slice(&val.to_be_bytes());
+        for (val, ret_bytes) in self.h.iter().zip(ret.bitcoin_as_chunks_mut::<4>().0) {
+            *ret_bytes = val.to_be_bytes();
         }
         Midstate { bytes: ret, bytes_hashed: self.bytes_hashed }
     }
@@ -128,19 +131,19 @@ impl Default for HashEngine {
 }
 
 impl crate::HashEngine for HashEngine {
+    type Hash = Hash;
+    type Bytes = [u8; 32];
     const BLOCK_SIZE: usize = 64;
 
     fn n_bytes_hashed(&self) -> u64 { self.bytes_hashed }
-
     crate::internal_macros::engine_input_impl!();
+    fn finalize(self) -> Self::Hash { Hash::from_engine(self) }
 }
 
 impl Hash {
     /// Iterate the sha256 algorithm to turn a sha256 hash into a sha256d hash
     #[must_use]
-    pub fn hash_again(&self) -> sha256d::Hash {
-        crate::Hash::from_byte_array(<Self as crate::GeneralHash>::hash(&self.0).0)
-    }
+    pub fn hash_again(&self) -> sha256d::Hash { sha256d::Hash::from_byte_array(hash(&self.0).0) }
 
     /// Computes hash from `bytes` in `const` context.
     ///

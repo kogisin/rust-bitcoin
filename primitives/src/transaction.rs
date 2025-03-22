@@ -12,6 +12,7 @@
 
 #[cfg(feature = "alloc")]
 use core::cmp;
+#[cfg(feature = "alloc")]
 use core::convert::Infallible;
 use core::fmt;
 
@@ -115,15 +116,19 @@ impl Transaction {
     pub const MAX_STANDARD_WEIGHT: Weight = Weight::from_wu(400_000);
 
     /// Returns a reference to the transaction inputs.
+    #[inline]
     pub fn inputs(&self) -> &[TxIn] { &self.input }
 
     /// Returns a mutable reference to the transaction inputs.
+    #[inline]
     pub fn inputs_mut(&mut self) -> &mut [TxIn] { &mut self.input }
 
     /// Returns a reference to the transaction outputs.
+    #[inline]
     pub fn outputs(&self) -> &[TxOut] { &self.output }
 
     /// Returns a mutable reference to the transaction outputs.
+    #[inline]
     pub fn outputs_mut(&mut self) -> &mut [TxOut] { &mut self.output }
 
     /// Computes a "normalized TXID" which does not include any signatures.
@@ -146,7 +151,7 @@ impl Transaction {
                 .collect(),
             output: self.output.clone(),
         };
-        cloned_tx.compute_txid().into()
+        sha256d::Hash::from_byte_array(cloned_tx.compute_txid().to_byte_array())
     }
 
     /// Computes the [`Txid`].
@@ -155,6 +160,7 @@ impl Transaction {
     /// witness fields themselves). For non-SegWit transactions which do not have any SegWit data,
     /// this will be equal to [`Transaction::compute_wtxid()`].
     #[doc(alias = "txid")]
+    #[inline]
     pub fn compute_txid(&self) -> Txid {
         let hash = hash_transaction(self, false);
         Txid::from_byte_array(hash.to_byte_array())
@@ -166,6 +172,7 @@ impl Transaction {
     /// witness fields themselves). For non-SegWit transactions which do not have any SegWit data,
     /// this will be equal to [`Transaction::compute_txid()`].
     #[doc(alias = "wtxid")]
+    #[inline]
     pub fn compute_wtxid(&self) -> Wtxid {
         let hash = hash_transaction(self, self.uses_segwit_serialization());
         Wtxid::from_byte_array(hash.to_byte_array())
@@ -173,6 +180,7 @@ impl Transaction {
 
     /// Returns whether or not to serialize transaction as specified in BIP-144.
     // This is duplicated in `bitcoin`, if you change it please do so in both places.
+    #[inline]
     fn uses_segwit_serialization(&self) -> bool {
         if self.input.iter().any(|input| !input.witness.is_empty()) {
             return true;
@@ -185,6 +193,7 @@ impl Transaction {
 
 #[cfg(feature = "alloc")]
 impl cmp::PartialOrd for Transaction {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> { Some(self.cmp(other)) }
 }
 
@@ -201,21 +210,25 @@ impl cmp::Ord for Transaction {
 
 #[cfg(feature = "alloc")]
 impl From<Transaction> for Txid {
+    #[inline]
     fn from(tx: Transaction) -> Txid { tx.compute_txid() }
 }
 
 #[cfg(feature = "alloc")]
 impl From<&Transaction> for Txid {
+    #[inline]
     fn from(tx: &Transaction) -> Txid { tx.compute_txid() }
 }
 
 #[cfg(feature = "alloc")]
 impl From<Transaction> for Wtxid {
+    #[inline]
     fn from(tx: Transaction) -> Wtxid { tx.compute_wtxid() }
 }
 
 #[cfg(feature = "alloc")]
 impl From<&Transaction> for Wtxid {
+    #[inline]
     fn from(tx: &Transaction) -> Wtxid { tx.compute_wtxid() }
 }
 
@@ -253,7 +266,7 @@ fn hash_transaction(tx: &Transaction, uses_segwit_serialization: bool) -> sha256
         enc.input(compact_size::encode(script_sig_bytes.len()).as_slice());
         enc.input(script_sig_bytes);
 
-        enc.input(&input.sequence.0.to_le_bytes())
+        enc.input(&input.sequence.0.to_le_bytes());
     }
 
     // Encode outputs with leading compact size encoded int.
@@ -273,7 +286,7 @@ fn hash_transaction(tx: &Transaction, uses_segwit_serialization: bool) -> sha256
         for input in &tx.input {
             // Same as `Encodable for Witness`.
             enc.input(compact_size::encode(input.witness.len()).as_slice());
-            for element in input.witness.iter() {
+            for element in &input.witness {
                 enc.input(compact_size::encode(element.len()).as_slice());
                 enc.input(element);
             }
@@ -310,9 +323,9 @@ pub struct TxIn {
     /// the miner behavior cannot be enforced.
     pub sequence: Sequence,
     /// Witness data: an array of byte-arrays.
-    /// Note that this field is *not* (de)serialized with the rest of the TxIn in
+    /// Note that this field is *not* (de)serialized with the rest of the `TxIn` in
     /// Encodable/Decodable, as it is (de)serialized at the end of the full
-    /// Transaction. It *is* (de)serialized with the rest of the TxIn in other
+    /// Transaction. It *is* (de)serialized with the rest of the `TxIn` in other
     /// (de)serialization routines.
     pub witness: Witness,
 }
@@ -377,6 +390,7 @@ impl OutPoint {
 }
 
 impl fmt::Display for OutPoint {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}:{}", self.txid, self.vout)
     }
@@ -439,20 +453,21 @@ pub enum ParseOutPointError {
 
 #[cfg(feature = "alloc")]
 impl From<Infallible> for ParseOutPointError {
+    #[inline]
     fn from(never: Infallible) -> Self { match never {} }
 }
 
 #[cfg(feature = "alloc")]
 impl fmt::Display for ParseOutPointError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use ParseOutPointError::*;
+        use ParseOutPointError as E;
 
         match *self {
-            Txid(ref e) => write_err!(f, "error parsing TXID"; e),
-            Vout(ref e) => write_err!(f, "error parsing vout"; e),
-            Format => write!(f, "OutPoint not in <txid>:<vout> format"),
-            TooLong => write!(f, "vout should be at most 10 digits"),
-            VoutNotCanonical => write!(f, "no leading zeroes or + allowed in vout part"),
+            E::Txid(ref e) => write_err!(f, "error parsing TXID"; e),
+            E::Vout(ref e) => write_err!(f, "error parsing vout"; e),
+            E::Format => write!(f, "OutPoint not in <txid>:<vout> format"),
+            E::TooLong => write!(f, "vout should be at most 10 digits"),
+            E::VoutNotCanonical => write!(f, "no leading zeroes or + allowed in vout part"),
         }
     }
 }
@@ -460,12 +475,12 @@ impl fmt::Display for ParseOutPointError {
 #[cfg(feature = "std")]
 impl std::error::Error for ParseOutPointError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        use ParseOutPointError::*;
+        use ParseOutPointError as E;
 
         match self {
-            Txid(e) => Some(e),
-            Vout(e) => Some(e),
-            Format | TooLong | VoutNotCanonical => None,
+            E::Txid(e) => Some(e),
+            E::Vout(e) => Some(e),
+            E::Format | E::TooLong | E::VoutNotCanonical => None,
         }
     }
 }
@@ -547,14 +562,18 @@ impl Version {
     /// As of Bitcoin Core 28.0 ([release notes](https://bitcoincore.org/en/releases/28.0/)),
     /// versions 1, 2, and 3 are considered standard.
     #[inline]
-    pub fn is_standard(&self) -> bool { *self == Version::ONE || *self == Version::TWO || *self == Version::THREE }
+    pub fn is_standard(self) -> bool {
+        self == Version::ONE || self == Version::TWO || self == Version::THREE
+    }
 }
 
 impl fmt::Display for Version {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
 }
 
 impl From<Version> for u32 {
+    #[inline]
     fn from(version: Version) -> Self { version.0 }
 }
 
@@ -628,6 +647,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sanity_check() {
+        let version = Version(123);
+        assert_eq!(version.to_u32(), 123);
+        assert_eq!(u32::from(version), 123);
+
+        assert!(!version.is_standard());
+        assert!(Version::ONE.is_standard());
+        assert!(Version::TWO.is_standard());
+        assert!(Version::THREE.is_standard());
+    }
+
+    #[test]
     fn transaction_functions() {
         let txin = TxIn {
             previous_output: OutPoint {
@@ -639,11 +670,14 @@ mod tests {
             witness: Witness::new(),
         };
 
-        let txout = TxOut { value: Amount::from_sat(123456789), script_pubkey: ScriptBuf::new() };
+        let txout = TxOut {
+            value: Amount::from_sat(123_456_789).unwrap(),
+            script_pubkey: ScriptBuf::new(),
+        };
 
         let tx_orig = Transaction {
             version: Version::ONE,
-            lock_time: absolute::LockTime::from_consensus(1738968231), // The time this was written
+            lock_time: absolute::LockTime::from_consensus(1_738_968_231), // The time this was written
             input: vec![txin.clone()],
             output: vec![txout.clone()],
         };
@@ -651,9 +685,9 @@ mod tests {
         // Test changing the transaction
         let mut tx = tx_orig.clone();
         tx.inputs_mut()[0].previous_output.txid = Txid::from_byte_array([0xFF; 32]);
-        tx.outputs_mut()[0].value = Amount::from_sat(987654321);
+        tx.outputs_mut()[0].value = Amount::from_sat(987_654_321).unwrap();
         assert_eq!(tx.inputs()[0].previous_output.txid.to_byte_array(), [0xFF; 32]);
-        assert_eq!(tx.outputs()[0].value.to_sat(), 987654321);
+        assert_eq!(tx.outputs()[0].value.to_sat(), 987_654_321);
 
         // Test uses_segwit_serialization
         assert!(!tx.uses_segwit_serialization());

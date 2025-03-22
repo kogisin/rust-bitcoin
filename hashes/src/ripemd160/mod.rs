@@ -2,6 +2,8 @@
 
 //! RIPEMD160 implementation.
 
+use internals::slice::SliceExt;
+
 #[cfg(bench)]
 mod benches;
 mod crypto;
@@ -68,8 +70,8 @@ impl HashEngine {
     #[cfg(not(hashes_fuzz))]
     fn midstate(&self) -> [u8; 20] {
         let mut ret = [0; 20];
-        for (val, ret_bytes) in self.h.iter().zip(ret.chunks_exact_mut(4)) {
-            ret_bytes.copy_from_slice(&(*val).to_le_bytes());
+        for (val, ret_bytes) in self.h.iter().zip(ret.bitcoin_as_chunks_mut().0) {
+            *ret_bytes = val.to_le_bytes();
         }
         ret
     }
@@ -87,9 +89,11 @@ impl Default for HashEngine {
 }
 
 impl crate::HashEngine for HashEngine {
+    type Hash = Hash;
+    type Bytes = [u8; 20];
     const BLOCK_SIZE: usize = 64;
 
     fn n_bytes_hashed(&self) -> u64 { self.bytes_hashed }
-
     crate::internal_macros::engine_input_impl!();
+    fn finalize(self) -> Self::Hash { Hash::from_engine(self) }
 }

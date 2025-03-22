@@ -13,9 +13,9 @@ use bitcoin::{
     Txid, Witness,
 };
 
-const DUMMY_UTXO_AMOUNT: Amount = Amount::from_sat_unchecked(20_000_000);
-const SPEND_AMOUNT: Amount = Amount::from_sat_unchecked(5_000_000);
-const CHANGE_AMOUNT: Amount = Amount::from_sat_unchecked(14_999_000); // 1000 sat fee.
+const DUMMY_UTXO_AMOUNT: Amount = Amount::from_sat_u32(20_000_000);
+const SPEND_AMOUNT: Amount = Amount::from_sat_u32(5_000_000);
+const CHANGE_AMOUNT: Amount = Amount::from_sat_u32(14_999_000); // 1000 sat fee.
 
 fn main() {
     let secp = Secp256k1::new();
@@ -71,7 +71,7 @@ fn main() {
     // Sign the sighash using the secp256k1 library (exported by rust-bitcoin).
     let tweaked: TweakedKeypair = keypair.tap_tweak(&secp, None);
     let msg = Message::from(sighash);
-    let signature = secp.sign_schnorr(&msg, &tweaked.to_inner());
+    let signature = secp.sign_schnorr(msg.as_ref(), &tweaked.to_inner());
 
     // Update the witness stack.
     let signature = bitcoin::taproot::Signature { signature, sighash_type };

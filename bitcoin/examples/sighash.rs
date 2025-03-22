@@ -29,8 +29,8 @@ fn compute_sighash_p2wpkh(raw_tx: &[u8], inp_idx: usize, amount: Amount) {
     // BIP-141: The witness must consist of exactly 2 items (≤ 520 bytes each). The first one a
     // signature, and the second one a public key.
     assert_eq!(witness.len(), 2);
-    let sig_bytes = witness.nth(0).unwrap();
-    let pk_bytes = witness.nth(1).unwrap();
+    let sig_bytes = witness.get(0).unwrap();
+    let pk_bytes = witness.get(1).unwrap();
 
     let sig = ecdsa::Signature::from_slice(sig_bytes).expect("failed to parse sig");
 
@@ -57,7 +57,7 @@ fn compute_sighash_p2wpkh(raw_tx: &[u8], inp_idx: usize, amount: Amount) {
 /// # Parameters
 ///
 /// * `raw_tx` - spending tx hex
-/// * `inp_idx` - spending tx input inde
+/// * `inp_idx` - spending tx input index
 /// * `script_pubkey_bytes_opt` - Option with scriptPubKey bytes. If None, it's p2sh case, i.e., reftx output's scriptPubKey.type is "scripthash". In this case scriptPubkey is extracted from the spending transaction's scriptSig. If Some(), it's p2ms case, i.e., reftx output's scriptPubKey.type is "multisig", and the scriptPubkey is supplied from the referenced output.
 fn compute_sighash_legacy(raw_tx: &[u8], inp_idx: usize, script_pubkey_bytes_opt: Option<&[u8]>) {
     let tx: Transaction = consensus::deserialize(raw_tx).unwrap();
@@ -118,7 +118,7 @@ fn compute_sighash_p2wsh(raw_tx: &[u8], inp_idx: usize, amount: Amount) {
 
     //in an M of N multisig, the witness elements from 1 (0-based) to M-2 are signatures (with sighash flags as the last byte)
     for n in 1..=witness.len() - 2 {
-        let sig_bytes = witness.nth(n).expect("out of bounds");
+        let sig_bytes = witness.get(n).expect("out of bounds");
         let sig = ecdsa::Signature::from_slice(sig_bytes).expect("failed to parse sig");
         let sig_len = sig_bytes.len() - 1; //last byte is EcdsaSighashType sighash flag
                                            //ECDSA signature in DER format lengths are between 70 and 72 bytes
@@ -148,14 +148,14 @@ fn sighash_p2wpkh() {
     let inp_idx = 0;
     //output value from the referenced vout:0 from the referenced tx:
     //bitcoin-cli getrawtransaction 752d675b9cc0bd14e0bd23969effee0005ad6d7e550dcc832f0216c7ffd4e15c  3
-    let ref_out_value = Amount::from_sat_unchecked(200000000);
+    let ref_out_value = Amount::from_sat_u32(200000000);
 
     println!("\nsighash_p2wpkh:");
     compute_sighash_p2wpkh(&raw_tx, inp_idx, ref_out_value);
 }
 
 fn sighash_p2sh_multisig_2x2() {
-    //Spending transactoin:
+    //Spending transaction:
     //bitcoin-cli getrawtransaction 214646c4b563cd8c788754ec94468ab71602f5ed07d5e976a2b0e41a413bcc0e  3
     //after decoding ScriptSig from the input:0, its last ASM element is the scriptpubkey:
     //bitcoin-cli decodescript 5221032d7306898e980c66aefdfb6b377eaf71597c449bf9ce741a3380c5646354f6de2103e8c742e1f283ef810c1cd0c8875e5c2998a05fc5b23c30160d3d33add7af565752ae
@@ -178,7 +178,7 @@ fn sighash_p2wsh_multisig_2x2() {
     //For the witness transaction sighash computation, we need its referenced output's value from the original transaction:
     //bitcoin-cli getrawtransaction 2845399a8cd7a52733f9f9d0e0b8b6c5d1c88aea4cee09f8d8fa762912b49e1b  3
     //we need vout 0 value in sats:
-    let ref_out_value = Amount::from_sat_unchecked(968240);
+    let ref_out_value = Amount::from_sat_u32(968240);
 
     println!("\nsighash_p2wsh_multisig_2x2:");
     compute_sighash_p2wsh(&raw_tx, 0, ref_out_value);

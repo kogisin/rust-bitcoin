@@ -31,7 +31,7 @@ impl Instruction<'_> {
         }
     }
 
-    /// Returns the number interpretted by the script parser
+    /// Returns the number interpreted by the script parser
     /// if it can be coerced into a number.
     ///
     /// This does not require the script num to be minimal.
@@ -231,7 +231,7 @@ impl<'a> InstructionIndices<'a> {
         let prev_remaining = self.remaining_bytes();
         let prev_pos = self.pos;
         let instruction = next_fn(self)?;
-        // No underflow: there must be less remaining bytes now than previously
+        // No overflow: there must be less remaining bytes now than previously
         let consumed = prev_remaining - self.remaining_bytes();
         // No overflow: sum will never exceed slice length which itself can't exceed `usize`
         self.pos += consumed;

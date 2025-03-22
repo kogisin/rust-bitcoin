@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Rust Bitcoin units library
+//! # Rust Bitcoin - unit types
 //!
 //! This library provides basic types used by the Rust Bitcoin ecosystem.
 
@@ -34,6 +34,7 @@ pub mod block;
 pub mod fee_rate;
 pub mod locktime;
 pub mod parse;
+pub mod time;
 pub mod weight;
 
 #[doc(inline)]
@@ -42,5 +43,6 @@ pub use self::{
     amount::{Amount, SignedAmount},
     block::{BlockHeight, BlockInterval},
     fee_rate::FeeRate,
+    time::BlockTime,
     weight::Weight
 };

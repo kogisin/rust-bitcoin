@@ -12,8 +12,12 @@ use core::convert::Infallible;
 use core::fmt;
 use core::iter::FusedIterator;
 
-use hashes::{sha256t, HashEngine};
+use hashes::{hash_newtype, sha256t, sha256t_tag, HashEngine};
+use internals::array::ArrayExt;
 use internals::{impl_to_hex_from_lower_hex, write_err};
+#[allow(unused)] // MSRV polyfill
+use internals::slice::SliceExt;
+
 use io::Write;
 use secp256k1::{Scalar, Secp256k1};
 
@@ -27,51 +31,97 @@ use crate::{Script, ScriptBuf};
 #[doc(inline)]
 pub use crate::crypto::taproot::{SigFromSliceError, Signature};
 #[doc(inline)]
+pub use merkle_branch::TaprootMerkleBranchBuf;
+#[doc(inline)]
 pub use merkle_branch::TaprootMerkleBranch;
-pub use primitives::taproot::{
-    TapBranchTag, TapLeafHash, TapLeafTag, TapNodeHash, TapTweakHash, TapTweakTag,
-};
 
-crate::internal_macros::define_extension_trait! {
-    /// Extension functionality for the [`TapTweakHash`] type.
-    pub trait TapTweakHashExt impl for TapTweakHash {
-        /// Constructs a new BIP341 [`TapTweakHash`] from key and tweak. Produces `H_taptweak(P||R)` where
-        /// `P` is the internal key and `R` is the Merkle root.
-        fn from_key_and_tweak(
-            internal_key: UntweakedPublicKey,
-            merkle_root: Option<TapNodeHash>,
-        ) -> TapTweakHash {
-            let mut eng = sha256t::Hash::<TapTweakTag>::engine();
-            // always hash the key
-            eng.input(&internal_key.serialize());
-            if let Some(h) = merkle_root {
-                eng.input(h.as_ref());
-            } else {
-                // nothing to hash
-            }
-            let inner = sha256t::Hash::<TapTweakTag>::from_engine(eng);
-            TapTweakHash::from_byte_array(inner.to_byte_array())
-        }
+type ControlBlockArrayVec = internals::array_vec::ArrayVec<u8, TAPROOT_CONTROL_MAX_SIZE>;
 
-        /// Converts a `TapTweakHash` into a `Scalar` ready for use with key tweaking API.
-        fn to_scalar(self) -> Scalar {
-            // This is statistically extremely unlikely to panic.
-            Scalar::from_be_bytes(self.to_byte_array()).expect("hash value greater than curve order")
+// Taproot test vectors from BIP-341 state the hashes without any reversing
+sha256t_tag! {
+    pub struct TapLeafTag = hash_str("TapLeaf");
+}
+
+hash_newtype! {
+    /// Taproot-tagged hash with tag \"TapLeaf\".
+    ///
+    /// This is used for computing tapscript script spend hash.
+    pub struct TapLeafHash(sha256t::Hash<TapLeafTag>);
+}
+
+hashes::impl_hex_for_newtype!(TapLeafHash);
+#[cfg(feature = "serde")]
+hashes::impl_serde_for_newtype!(TapLeafHash);
+
+sha256t_tag! {
+    pub struct TapBranchTag = hash_str("TapBranch");
+}
+
+hash_newtype! {
+    /// Tagged hash used in Taproot trees.
+    ///
+    /// See BIP-340 for tagging rules.
+    #[repr(transparent)]
+    pub struct TapNodeHash(sha256t::Hash<TapBranchTag>);
+}
+
+hashes::impl_hex_for_newtype!(TapNodeHash);
+#[cfg(feature = "serde")]
+hashes::impl_serde_for_newtype!(TapNodeHash);
+
+sha256t_tag! {
+    pub struct TapTweakTag = hash_str("TapTweak");
+}
+
+hash_newtype! {
+    /// Taproot-tagged hash with tag \"TapTweak\".
+    ///
+    /// This hash type is used while computing the tweaked public key.
+    pub struct TapTweakHash(sha256t::Hash<TapTweakTag>);
+}
+
+hashes::impl_hex_for_newtype!(TapTweakHash);
+#[cfg(feature = "serde")]
+hashes::impl_serde_for_newtype!(TapTweakHash);
+
+impl From<TapLeafHash> for TapNodeHash {
+    fn from(leaf: TapLeafHash) -> TapNodeHash { TapNodeHash::from_byte_array(leaf.to_byte_array()) }
+}
+
+impl TapTweakHash {
+    /// Constructs a new BIP341 [`TapTweakHash`] from key and tweak. Produces `H_taptweak(P||R)` where
+    /// `P` is the internal key and `R` is the Merkle root.
+    pub fn from_key_and_tweak(
+        internal_key: UntweakedPublicKey,
+        merkle_root: Option<TapNodeHash>,
+    ) -> TapTweakHash {
+        let mut eng = sha256t::Hash::<TapTweakTag>::engine();
+        // always hash the key
+        eng.input(&internal_key.serialize());
+        if let Some(h) = merkle_root {
+            eng.input(h.as_ref());
+        } else {
+            // nothing to hash
         }
+        let inner = sha256t::Hash::<TapTweakTag>::from_engine(eng);
+        TapTweakHash::from_byte_array(inner.to_byte_array())
+    }
+
+    /// Converts a `TapTweakHash` into a `Scalar` ready for use with key tweaking API.
+    pub fn to_scalar(self) -> Scalar {
+        // This is statistically extremely unlikely to panic.
+        Scalar::from_be_bytes(self.to_byte_array()).expect("hash value greater than curve order")
     }
 }
 
-crate::internal_macros::define_extension_trait! {
-    /// Extension functionality for the [`TapLeafHash`] type.
-    pub trait TapLeafHashExt impl for TapLeafHash {
-        /// Computes the leaf hash from components.
-        fn from_script(script: &Script, ver: LeafVersion) -> TapLeafHash {
-            let mut eng = sha256t::Hash::<TapLeafTag>::engine();
-            ver.to_consensus().consensus_encode(&mut eng).expect("engines don't error");
-            script.consensus_encode(&mut eng).expect("engines don't error");
-            let inner = sha256t::Hash::<TapLeafTag>::from_engine(eng);
-            TapLeafHash::from_byte_array(inner.to_byte_array())
-        }
+impl TapLeafHash {
+    /// Computes the leaf hash from components.
+    pub fn from_script(script: &Script, ver: LeafVersion) -> TapLeafHash {
+        let mut eng = sha256t::Hash::<TapLeafTag>::engine();
+        ver.to_consensus().consensus_encode(&mut eng).expect("engines don't error");
+        script.consensus_encode(&mut eng).expect("engines don't error");
+        let inner = sha256t::Hash::<TapLeafTag>::from_engine(eng);
+        TapLeafHash::from_byte_array(inner.to_byte_array())
     }
 }
 
@@ -83,25 +133,22 @@ impl From<&LeafNode> for TapNodeHash {
     fn from(leaf: &LeafNode) -> TapNodeHash { leaf.node_hash() }
 }
 
-crate::internal_macros::define_extension_trait! {
-    /// Extension functionality for the [`TapNodeHash`] type.
-    pub trait TapNodeHashExt impl for TapNodeHash {
-        /// Computes branch hash given two hashes of the nodes underneath it.
-        fn from_node_hashes(a: TapNodeHash, b: TapNodeHash) -> TapNodeHash {
-            combine_node_hashes(a, b).0
-        }
+impl TapNodeHash {
+    /// Computes branch hash given two hashes of the nodes underneath it.
+    pub fn from_node_hashes(a: TapNodeHash, b: TapNodeHash) -> TapNodeHash {
+        combine_node_hashes(a, b).0
+    }
 
-        /// Assumes the given 32 byte array as hidden [`TapNodeHash`].
-        ///
-        /// Similar to [`TapLeafHash::from_byte_array`], but explicitly conveys that the
-        /// hash is constructed from a hidden node. This also has better ergonomics
-        /// because it does not require the caller to import the Hash trait.
-        fn assume_hidden(hash: [u8; 32]) -> TapNodeHash { TapNodeHash::from_byte_array(hash) }
+    /// Assumes the given 32 byte array as hidden [`TapNodeHash`].
+    ///
+    /// Similar to [`TapLeafHash::from_byte_array`], but explicitly conveys that the
+    /// hash is constructed from a hidden node. This also has better ergonomics
+    /// because it does not require the caller to import the Hash trait.
+    pub fn assume_hidden(hash: [u8; 32]) -> TapNodeHash { TapNodeHash::from_byte_array(hash) }
 
-        /// Computes the [`TapNodeHash`] from a script and a leaf version.
-        fn from_script(script: &Script, ver: LeafVersion) -> TapNodeHash {
-            TapNodeHash::from(TapLeafHash::from_script(script, ver))
-        }
+    /// Computes the [`TapNodeHash`] from a script and a leaf version.
+    pub fn from_script(script: &Script, ver: LeafVersion) -> TapNodeHash {
+        TapNodeHash::from(TapLeafHash::from_script(script, ver))
     }
 }
 
@@ -142,8 +189,17 @@ pub const TAPROOT_CONTROL_BASE_SIZE: usize = 33;
 pub const TAPROOT_CONTROL_MAX_SIZE: usize =
     TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
 
+/// The leaf script with its version.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct LeafScript<S> {
+    /// The version of the script.
+    pub version: LeafVersion,
+    /// The script, usually `ScriptBuf` or `&Script`.
+    pub script: S,
+}
+
 // type alias for versioned tap script corresponding Merkle proof
-type ScriptMerkleProofMap = BTreeMap<(ScriptBuf, LeafVersion), BTreeSet<TaprootMerkleBranch>>;
+type ScriptMerkleProofMap = BTreeMap<(ScriptBuf, LeafVersion), BTreeSet<TaprootMerkleBranchBuf>>;
 
 /// Represents Taproot spending information.
 ///
@@ -174,7 +230,7 @@ pub struct TaprootSpendInfo {
     output_key_parity: secp256k1::Parity,
     /// The tweaked output key.
     output_key: TweakedPublicKey,
-    /// Map from (script, leaf_version) to (sets of) [`TaprootMerkleBranch`]. More than one control
+    /// Map from (script, leaf_version) to (sets of) [`TaprootMerkleBranchBuf`]. More than one control
     /// block for a given script is only possible if it appears in multiple branches of the tree. In
     /// all cases, keeping one should be enough for spending funds, but we keep all of the paths so
     /// that a full tree can be constructed again from spending data if required.
@@ -990,7 +1046,7 @@ pub struct LeafNode {
     /// The [`TapLeaf`]
     leaf: TapLeaf,
     /// The Merkle proof (hashing partners) to get this node.
-    merkle_branch: TaprootMerkleBranch,
+    merkle_branch: TaprootMerkleBranchBuf,
 }
 
 impl LeafNode {
@@ -1085,7 +1141,7 @@ impl<'leaf> ScriptLeaf<'leaf> {
 /// Control block data structure used in Tapscript satisfaction.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ControlBlock {
+pub struct ControlBlock<Branch = TaprootMerkleBranchBuf> where Branch: ?Sized {
     /// The tapleaf version.
     pub leaf_version: LeafVersion,
     /// The parity of the output key (NOT THE INTERNAL KEY WHICH IS ALWAYS XONLY).
@@ -1093,7 +1149,7 @@ pub struct ControlBlock {
     /// The internal key.
     pub internal_key: UntweakedPublicKey,
     /// The Merkle proof of a script associated with this leaf.
-    pub merkle_branch: TaprootMerkleBranch,
+    pub merkle_branch: Branch,
 }
 
 impl ControlBlock {
@@ -1110,27 +1166,29 @@ impl ControlBlock {
     /// - [`TaprootError::InvalidInternalKey`] if internal key is invalid (first 32 bytes after the parity byte).
     /// - [`TaprootError::InvalidMerkleTreeDepth`] if Merkle tree is too deep (more than 128 levels).
     pub fn decode(sl: &[u8]) -> Result<ControlBlock, TaprootError> {
-        if sl.len() < TAPROOT_CONTROL_BASE_SIZE
-            || (sl.len() - TAPROOT_CONTROL_BASE_SIZE) % TAPROOT_CONTROL_NODE_SIZE != 0
-        {
-            return Err(InvalidControlBlockSizeError(sl.len()).into());
-        }
-        let output_key_parity = match sl[0] & 1 {
+        let (base, merkle_branch) = sl.split_first_chunk::<TAPROOT_CONTROL_BASE_SIZE>()
+            .ok_or(InvalidControlBlockSizeError(sl.len()))?;
+
+        let (&first, internal_key) = base.split_first();
+
+        let output_key_parity = match first & 1 {
             0 => secp256k1::Parity::Even,
             _ => secp256k1::Parity::Odd,
         };
 
-        let leaf_version = LeafVersion::from_consensus(sl[0] & TAPROOT_LEAF_MASK)?;
-        let internal_key = UntweakedPublicKey::from_slice(&sl[1..TAPROOT_CONTROL_BASE_SIZE])
+        let leaf_version = LeafVersion::from_consensus(first & TAPROOT_LEAF_MASK)?;
+        let internal_key = UntweakedPublicKey::from_byte_array(internal_key)
             .map_err(TaprootError::InvalidInternalKey)?;
-        let merkle_branch = TaprootMerkleBranch::decode(&sl[TAPROOT_CONTROL_BASE_SIZE..])?;
+        let merkle_branch = TaprootMerkleBranchBuf::decode(merkle_branch)?;
         Ok(ControlBlock { leaf_version, output_key_parity, internal_key, merkle_branch })
     }
+}
 
+impl<Branch: AsRef<TaprootMerkleBranch> + ?Sized> ControlBlock<Branch> {
     /// Returns the size of control block. Faster and more efficient than calling
     /// `Self::serialize().len()`. Can be handy for fee estimation.
     pub fn size(&self) -> usize {
-        TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * self.merkle_branch.len()
+        TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * self.merkle_branch.as_ref().len()
     }
 
     /// Serializes to a writer.
@@ -1139,12 +1197,26 @@ impl ControlBlock {
     ///
     /// The number of bytes written to the writer.
     pub fn encode<W: Write + ?Sized>(&self, writer: &mut W) -> io::Result<usize> {
+        self.encode_inner(move |bytes| writer.write_all(bytes))?;
+        Ok(self.size())
+    }
+
+    pub(crate) fn encode_to_arrayvec(&self) -> ControlBlockArrayVec {
+        let mut result = ControlBlockArrayVec::new();
+        self.encode_inner(|bytes| -> Result<(), core::convert::Infallible> {
+            result.extend_from_slice(bytes);
+            Ok(())
+        }).unwrap_or_else(|never| match never {});
+        result
+    }
+
+    fn encode_inner<E>(&self, mut write: impl FnMut(&[u8]) -> Result<(), E>) -> Result<(), E> {
         let first_byte: u8 =
             i32::from(self.output_key_parity) as u8 | self.leaf_version.to_consensus();
-        writer.write_all(&[first_byte])?;
-        writer.write_all(&self.internal_key.serialize())?;
-        self.merkle_branch.encode(writer)?;
-        Ok(self.size())
+        write(&[first_byte])?;
+        write(&self.internal_key.serialize())?;
+        write(self.merkle_branch.as_ref().as_bytes())?;
+        Ok(())
     }
 
     /// Serializes the control block.
@@ -1172,7 +1244,7 @@ impl ControlBlock {
         // Initially the curr_hash is the leaf hash
         let mut curr_hash = TapNodeHash::from_script(script, self.leaf_version);
         // Verify the proof
-        for elem in &self.merkle_branch {
+        for elem in self.merkle_branch.as_ref() {
             // Recalculate the curr hash as parent hash
             curr_hash = TapNodeHash::from_node_hashes(curr_hash, *elem);
         }
@@ -1554,13 +1626,6 @@ impl fmt::Display for InvalidControlBlockSizeError {
 #[cfg(feature = "std")]
 impl std::error::Error for InvalidControlBlockSizeError {}
 
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for super::TapTweakHash {}
-    impl Sealed for super::TapLeafHash {}
-    impl Sealed for super::TapNodeHash {}
-}
-
 #[cfg(test)]
 mod test {
     use hashes::sha256;
@@ -1881,7 +1946,7 @@ mod test {
                 .unwrap()
                 .to_byte_array(),
         );
-        let merkle_branch = TaprootMerkleBranch::from([hash1, hash2]);
+        let merkle_branch = TaprootMerkleBranchBuf::from([hash1, hash2]);
         // use serde_test to test serialization and deserialization
         serde_test::assert_tokens(
             &merkle_branch.readable(),

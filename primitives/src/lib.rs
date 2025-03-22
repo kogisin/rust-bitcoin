@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! # Rust Bitcoin - primitive types.
+//! # Rust Bitcoin - primitive types
 //!
 //! Primitive data types that are used throughout the [`rust-bitcoin`] ecosystem.
 //!
@@ -16,12 +16,6 @@
 #![warn(missing_docs)]
 #![warn(deprecated_in_future)]
 #![doc(test(attr(warn(unused))))]
-// Pedantic lints that we enforce.
-// #![warn(clippy::must_use_candidate)]
-#![warn(clippy::return_self_not_must_use)]
-// Exclude lints we don't think are valuable.
-#![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
-#![allow(clippy::manual_range_contains)] // More readable than clippy's format.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -44,12 +38,11 @@ pub mod _export {
 pub mod block;
 pub mod locktime;
 pub mod merkle_tree;
-pub mod opcodes;
+mod opcodes;
 pub mod pow;
 #[cfg(feature = "alloc")]
 pub mod script;
 pub mod sequence;
-pub mod taproot;
 pub mod transaction;
 #[cfg(feature = "alloc")]
 pub mod witness;
@@ -59,6 +52,7 @@ pub use units::{
     amount::{self, Amount, SignedAmount},
     block::{BlockHeight, BlockInterval},
     fee_rate::{self, FeeRate},
+    time::{self, BlockTime},
     weight::{self, Weight},
 };
 
@@ -74,14 +68,12 @@ pub use self::{
 };
 #[doc(inline)]
 pub use self::{
-    block::{BlockHash, Header as BlockHeader, WitnessCommitment},
+    block::{BlockHash, Header as BlockHeader, Version as BlockVersion, WitnessCommitment},
     locktime::{absolute, relative},
     merkle_tree::{TxMerkleNode, WitnessMerkleNode},
-    opcodes::Opcode,
     pow::CompactTarget,
     sequence::Sequence,
-    taproot::{TapBranchTag, TapLeafHash, TapLeafTag, TapNodeHash, TapTweakHash, TapTweakTag},
-    transaction::{OutPoint, Txid, Wtxid},
+    transaction::{OutPoint, Txid, Version as TransactionVersion, Wtxid},
 };
 
 #[rustfmt::skip]

@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 /// The factor that non-witness serialization data is multiplied by during weight calculation.
 pub const WITNESS_SCALE_FACTOR: usize = 4;
 
-/// Represents block weight - the weight of a transaction or block.
+/// Represents weight - the weight of a transaction or block.
 ///
 /// This is an integer newtype representing [`Weight`] in `wu`. It provides protection against mixing
-/// up the types as well as basic formatting features.
+/// up types as well as basic formatting features.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -48,7 +48,13 @@ impl Weight {
     pub const fn from_wu(wu: u64) -> Self { Weight(wu) }
 
     /// Constructs a new [`Weight`] from kilo weight units returning [`None`] if an overflow occurred.
-    pub fn from_kwu(wu: u64) -> Option<Self> { wu.checked_mul(1000).map(Weight) }
+    pub const fn from_kwu(wu: u64) -> Option<Self> {
+        // No `map()` in const context.
+        match wu.checked_mul(1000) {
+            Some(wu) => Some(Weight::from_wu(wu)),
+            None => None,
+        }
+    }
 
     /// Constructs a new [`Weight`] from virtual bytes, returning [`None`] if an overflow occurred.
     pub const fn from_vb(vb: u64) -> Option<Self> {
@@ -166,52 +172,62 @@ impl From<Weight> for u64 {
     fn from(value: Weight) -> Self { value.to_wu() }
 }
 
-impl ops::Add for Weight {
-    type Output = Weight;
+crate::internal_macros::impl_op_for_references! {
+    impl ops::Add<Weight> for Weight {
+        type Output = Weight;
 
-    fn add(self, rhs: Weight) -> Self::Output { Weight(self.0 + rhs.0) }
+        fn add(self, rhs: Weight) -> Self::Output { Weight(self.0 + rhs.0) }
+    }
+    impl ops::Sub<Weight> for Weight {
+        type Output = Weight;
+
+        fn sub(self, rhs: Weight) -> Self::Output { Weight(self.0 - rhs.0) }
+    }
+
+    impl ops::Mul<u64> for Weight {
+        type Output = Weight;
+
+        fn mul(self, rhs: u64) -> Self::Output { Weight(self.0 * rhs) }
+    }
+    impl ops::Mul<Weight> for u64 {
+        type Output = Weight;
+
+        fn mul(self, rhs: Weight) -> Self::Output { Weight(self * rhs.0) }
+    }
+    impl ops::Div<u64> for Weight {
+        type Output = Weight;
+
+        fn div(self, rhs: u64) -> Self::Output { Weight(self.0 / rhs) }
+    }
+    impl ops::Div<Weight> for Weight {
+        type Output = u64;
+
+        fn div(self, rhs: Weight) -> Self::Output { self.to_wu() / rhs.to_wu() }
+    }
+    impl ops::Rem<u64> for Weight {
+        type Output = Weight;
+
+        fn rem(self, rhs: u64) -> Self::Output { Weight(self.0 % rhs) }
+    }
+    impl ops::Rem<Weight> for Weight {
+        type Output = u64;
+
+        fn rem(self, rhs: Weight) -> Self::Output { self.0 % rhs.0 }
+    }
 }
-crate::internal_macros::impl_add_for_references!(Weight);
 crate::internal_macros::impl_add_assign!(Weight);
-
-impl ops::Sub for Weight {
-    type Output = Weight;
-
-    fn sub(self, rhs: Weight) -> Self::Output { Weight(self.0 - rhs.0) }
-}
-crate::internal_macros::impl_sub_for_references!(Weight);
 crate::internal_macros::impl_sub_assign!(Weight);
-
-impl ops::Mul<u64> for Weight {
-    type Output = Weight;
-
-    fn mul(self, rhs: u64) -> Self::Output { Weight(self.0 * rhs) }
-}
-
-impl ops::Mul<Weight> for u64 {
-    type Output = Weight;
-
-    fn mul(self, rhs: Weight) -> Self::Output { Weight(self * rhs.0) }
-}
 
 impl ops::MulAssign<u64> for Weight {
     fn mul_assign(&mut self, rhs: u64) { self.0 *= rhs }
 }
 
-impl ops::Div<u64> for Weight {
-    type Output = Weight;
-
-    fn div(self, rhs: u64) -> Self::Output { Weight(self.0 / rhs) }
-}
-
-impl ops::Div<Weight> for Weight {
-    type Output = u64;
-
-    fn div(self, rhs: Weight) -> Self::Output { self.to_wu() / rhs.to_wu() }
-}
-
 impl ops::DivAssign<u64> for Weight {
     fn div_assign(&mut self, rhs: u64) { self.0 /= rhs }
+}
+
+impl ops::RemAssign<u64> for Weight {
+    fn rem_assign(&mut self, rhs: u64) { self.0 %= rhs }
 }
 
 impl core::iter::Sum for Weight {
@@ -442,5 +458,24 @@ mod tests {
         let mut w = Weight(8);
         w /= Weight(4).into();
         assert_eq!(w, Weight(2));
+    }
+
+    #[test]
+    fn remainder() {
+        let weight10 = Weight(10);
+        let weight3 = Weight(3);
+
+        let remainder = weight10 % weight3;
+        assert_eq!(remainder, 1);
+
+        let remainder = weight10 % 3;
+        assert_eq!(remainder, Weight(1));
+    }
+
+    #[test]
+    fn remainder_assign() {
+        let mut weight = Weight(10);
+        weight %= 3;
+        assert_eq!(weight, Weight(1));
     }
 }

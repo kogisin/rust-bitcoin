@@ -26,13 +26,14 @@ use std::collections::BTreeMap;
 
 use bitcoin::address::script_pubkey::ScriptBufExt as _;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, IntoDerivationPath, Xpriv, Xpub};
+use bitcoin::key::WPubkeyHash;
 use bitcoin::locktime::absolute;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::{Secp256k1, Signing};
 use bitcoin::witness::WitnessExt as _;
 use bitcoin::{
     consensus, transaction, Address, Amount, EcdsaSighashType, Network, OutPoint, Psbt, ScriptBuf,
-    Sequence, Transaction, TxIn, TxOut, Txid, WPubkeyHash, Witness,
+    Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 
 // The master xpriv, from which we derive the keys we control.
@@ -46,12 +47,12 @@ const BIP84_DERIVATION_PATH: &str = "m/84'/0'/0'";
 const MASTER_FINGERPRINT: &str = "9680603f";
 
 // The dummy UTXO amounts we are spending.
-const DUMMY_UTXO_AMOUNT_INPUT_1: Amount = Amount::from_sat_unchecked(20_000_000);
-const DUMMY_UTXO_AMOUNT_INPUT_2: Amount = Amount::from_sat_unchecked(10_000_000);
+const DUMMY_UTXO_AMOUNT_INPUT_1: Amount = Amount::from_sat_u32(20_000_000);
+const DUMMY_UTXO_AMOUNT_INPUT_2: Amount = Amount::from_sat_u32(10_000_000);
 
 // The amounts we are sending to someone, and receiving back as change.
-const SPEND_AMOUNT: Amount = Amount::from_sat_unchecked(25_000_000);
-const CHANGE_AMOUNT: Amount = Amount::from_sat_unchecked(4_990_000); // 10_000 sat fee.
+const SPEND_AMOUNT: Amount = Amount::from_sat_u32(25_000_000);
+const CHANGE_AMOUNT: Amount = Amount::from_sat_u32(4_990_000); // 10_000 sat fee.
 
 // Derive the external address xpriv.
 fn get_external_address_xpriv<C: Signing>(

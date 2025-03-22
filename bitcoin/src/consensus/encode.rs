@@ -16,7 +16,7 @@
 
 use core::mem;
 
-use hashes::{sha256, sha256d, GeneralHash, Hash};
+use hashes::{sha256, sha256d, Hash};
 use hex::DisplayHex as _;
 use internals::{compact_size, ToU64};
 use io::{BufRead, Cursor, Read, Write};
@@ -286,7 +286,7 @@ pub trait Decodable: Sized {
     ///
     /// ### Rules for trait implementations
     ///
-    /// * Simple types that that have a fixed size (own and member fields), don't have to overwrite
+    /// * Simple types that have a fixed size (own and member fields), don't have to overwrite
     ///   this method, or be concern with it.
     /// * Types that deserialize using externally provided length should implement it:
     ///   * Make `consensus_decode` forward to `consensus_decode_bytes_from_finite_reader` with the
@@ -629,7 +629,7 @@ impl Decodable for Box<[u8]> {
 
 /// Does a double-SHA256 on `data` and returns the first 4 bytes.
 fn sha2_checksum(data: &[u8]) -> [u8; 4] {
-    let checksum = <sha256d::Hash as GeneralHash>::hash(data);
+    let checksum = sha256d::hash(data);
     let checksum = checksum.to_byte_array();
     [checksum[0], checksum[1], checksum[2], checksum[3]]
 }

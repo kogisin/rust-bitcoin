@@ -38,6 +38,7 @@
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
+#![allow(clippy::incompatible_msrv)] // Has FPs and we're testing it which is more reliable anyway.
 
 // We only support machines with index size of 4 bytes or more.
 //
@@ -120,14 +121,14 @@ pub mod taproot;
 pub use primitives::{
     block::{
         Block, BlockHash, Checked as BlockChecked, Header as BlockHeader,
-        Unchecked as BlockUnchecked, Validation as BlockValidation, WitnessCommitment,
+        Unchecked as BlockUnchecked, Validation as BlockValidation, Version as BlockVersion,
+        WitnessCommitment,
     },
     merkle_tree::{TxMerkleNode, WitnessMerkleNode},
-    opcodes::Opcode,
     pow::CompactTarget, // No `pow` module outside of `primitives`.
     script::{Script, ScriptBuf},
     sequence::{self, Sequence}, // No `sequence` module outside of `primitives`.
-    transaction::{OutPoint, Transaction, TxIn, TxOut, Txid, Wtxid},
+    transaction::{OutPoint, Transaction, TxIn, TxOut, Txid, Version as TransactionVersion, Wtxid},
     witness::Witness,
 };
 #[doc(inline)]
@@ -135,6 +136,7 @@ pub use units::{
     amount::{Amount, Denomination, SignedAmount},
     block::{BlockHeight, BlockInterval},
     fee_rate::FeeRate,
+    time::{self, BlockTime},
     weight::Weight,
 };
 
@@ -144,9 +146,7 @@ pub use crate::{
     bip158::{FilterHash, FilterHeader},
     bip32::XKeyIdentifier,
     crypto::ecdsa,
-    crypto::key::{
-        self, CompressedPublicKey, PrivateKey, PubkeyHash, PublicKey, WPubkeyHash, XOnlyPublicKey,
-    },
+    crypto::key::{self, CompressedPublicKey, PrivateKey, PublicKey, XOnlyPublicKey},
     crypto::sighash::{self, LegacySighash, SegwitV0Sighash, TapSighash, TapSighashTag},
     merkle_tree::MerkleBlock,
     network::params::{self, Params},
@@ -161,13 +161,11 @@ pub use crate::{
 pub use crate::{
     // Also, re-export types and modules from `blockdata` that don't come from `primitives`.
     blockdata::locktime::{absolute, relative},
+    blockdata::opcodes::{self, Opcode},
     blockdata::script::witness_program::{self, WitnessProgram},
     blockdata::script::witness_version::{self, WitnessVersion},
-    blockdata::script::{ScriptHash, WScriptHash}, // TODO: Move these down below after they are in primitives.
     // These modules also re-export all the respective `primitives` types.
-    blockdata::{
-        block, constants, fee_rate, locktime, opcodes, script, transaction, weight, witness,
-    },
+    blockdata::{block, constants, fee_rate, locktime, script, transaction, weight, witness},
 };
 
 #[rustfmt::skip]
@@ -199,7 +197,7 @@ pub mod amount {
     //! This module mainly introduces the [`Amount`] and [`SignedAmount`] types.
     //! We refer to the documentation on the types for more information.
 
-    use crate::consensus::{encode, Decodable, Encodable};
+    use crate::consensus::{self, encode, Decodable, Encodable};
     use crate::io::{BufRead, Write};
 
     #[rustfmt::skip]            // Keep public re-exports separate.
@@ -216,7 +214,9 @@ pub mod amount {
     impl Decodable for Amount {
         #[inline]
         fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-            Ok(Amount::from_sat(Decodable::consensus_decode(r)?))
+            Amount::from_sat(Decodable::consensus_decode(r)?).map_err(|_| {
+                consensus::parse_failed_error("amount is greater than Amount::MAX_MONEY")
+            })
         }
     }
 

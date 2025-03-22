@@ -10,7 +10,8 @@ use core::ops::Index;
 use core::str::FromStr;
 use core::{fmt, slice};
 
-use hashes::{hash160, hash_newtype, sha512, GeneralHash, HashEngine, Hmac, HmacEngine};
+use hashes::{hash160, hash_newtype, sha512, Hash, HashEngine, Hmac, HmacEngine};
+use internals::array::ArrayExt;
 use internals::write_err;
 use secp256k1::{Secp256k1, XOnlyPublicKey};
 
@@ -44,7 +45,7 @@ impl_array_newtype_stringify!(ChainCode, 32);
 
 impl ChainCode {
     fn from_hmac(hmac: Hmac<sha512::Hash>) -> Self {
-        hmac.as_ref()[32..].try_into().expect("half of hmac is guaranteed to be 32 bytes")
+        ChainCode(*hmac.as_byte_array().split_array::<32, 32>().1)
     }
 }
 
@@ -518,6 +519,12 @@ pub enum Error {
     InvalidPublicKeyHexLength(usize),
     /// Base58 decoded data was an invalid length.
     InvalidBase58PayloadLength(InvalidBase58PayloadLengthError),
+    /// Invalid private key prefix (byte 45 must be 0)
+    InvalidPrivateKeyPrefix,
+    /// Non-zero parent fingerprint for a master key (depth 0)
+    NonZeroParentFingerprintForMasterKey,
+    /// Non-zero child number for a master key (depth 0)
+    NonZeroChildNumberForMasterKey,
 }
 
 impl From<Infallible> for Error {
@@ -544,6 +551,11 @@ impl fmt::Display for Error {
             InvalidPublicKeyHexLength(got) =>
                 write!(f, "PublicKey hex should be 66 or 130 digits long, got: {}", got),
             InvalidBase58PayloadLength(ref e) => write_err!(f, "base58 payload"; e),
+            InvalidPrivateKeyPrefix =>
+                f.write_str("invalid private key prefix, byte 45 must be 0 as required by BIP-32"),
+            NonZeroParentFingerprintForMasterKey =>
+                f.write_str("non-zero parent fingerprint in master key"),
+            NonZeroChildNumberForMasterKey => f.write_str("non-zero child number in master key"),
         }
     }
 }
@@ -565,6 +577,9 @@ impl std::error::Error for Error {
             | UnknownVersion(_)
             | WrongExtendedKeyLength(_)
             | InvalidPublicKeyHexLength(_) => None,
+            InvalidPrivateKeyPrefix => None,
+            NonZeroParentFingerprintForMasterKey => None,
+            NonZeroChildNumberForMasterKey => None,
         }
     }
 }
@@ -584,17 +599,19 @@ impl From<InvalidBase58PayloadLengthError> for Error {
 impl Xpriv {
     /// Constructs a new master key from a seed value
     pub fn new_master(network: impl Into<NetworkKind>, seed: &[u8]) -> Result<Xpriv, Error> {
-        let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(b"Bitcoin seed");
-        hmac_engine.input(seed);
-        let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
+        let mut engine = HmacEngine::<sha512::HashEngine>::new(b"Bitcoin seed");
+        engine.input(seed);
+        let hmac = engine.finalize();
 
         Ok(Xpriv {
             network: network.into(),
             depth: 0,
             parent_fingerprint: Default::default(),
             child_number: ChildNumber::ZERO_NORMAL,
-            private_key: secp256k1::SecretKey::from_slice(&hmac_result.as_ref()[..32])?,
-            chain_code: ChainCode::from_hmac(hmac_result),
+            private_key: secp256k1::SecretKey::from_byte_array(
+                hmac.as_byte_array().split_array::<32, 32>().0,
+            )?,
+            chain_code: ChainCode::from_hmac(hmac),
         })
     }
 
@@ -648,25 +665,27 @@ impl Xpriv {
 
     /// Private->Private child key derivation
     fn ckd_priv<C: secp256k1::Signing>(&self, secp: &Secp256k1<C>, i: ChildNumber) -> Xpriv {
-        let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(&self.chain_code[..]);
+        let mut engine = HmacEngine::<sha512::HashEngine>::new(&self.chain_code[..]);
         match i {
             ChildNumber::Normal { .. } => {
                 // Non-hardened key: compute public data and use that
-                hmac_engine.input(
+                engine.input(
                     &secp256k1::PublicKey::from_secret_key(secp, &self.private_key).serialize()[..],
                 );
             }
             ChildNumber::Hardened { .. } => {
                 // Hardened key: use only secret data to prevent public derivation
-                hmac_engine.input(&[0u8]);
-                hmac_engine.input(&self.private_key[..]);
+                engine.input(&[0u8]);
+                engine.input(&self.private_key[..]);
             }
         }
 
-        hmac_engine.input(&u32::from(i).to_be_bytes());
-        let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
-        let sk = secp256k1::SecretKey::from_slice(&hmac_result.as_ref()[..32])
-            .expect("statistically impossible to hit");
+        engine.input(&u32::from(i).to_be_bytes());
+        let hmac: Hmac<sha512::Hash> = engine.finalize();
+        let sk = secp256k1::SecretKey::from_byte_array(
+            hmac.as_byte_array().split_array::<32, 32>().0,
+        )
+        .expect("statistically impossible to hit");
         let tweaked =
             sk.add_tweak(&self.private_key.into()).expect("statistically impossible to hit");
 
@@ -676,36 +695,39 @@ impl Xpriv {
             parent_fingerprint: self.fingerprint(secp),
             child_number: i,
             private_key: tweaked,
-            chain_code: ChainCode::from_hmac(hmac_result),
+            chain_code: ChainCode::from_hmac(hmac),
         }
     }
 
     /// Decoding extended private key from binary data according to BIP 32
     pub fn decode(data: &[u8]) -> Result<Xpriv, Error> {
-        if data.len() != 78 {
-            return Err(Error::WrongExtendedKeyLength(data.len()));
-        }
+        let Common {
+            network,
+            depth,
+            parent_fingerprint,
+            child_number,
+            chain_code,
+            key,
+        } = Common::decode(data)?;
 
-        let network = if data.starts_with(&VERSION_BYTES_MAINNET_PRIVATE) {
-            NetworkKind::Main
-        } else if data.starts_with(&VERSION_BYTES_TESTNETS_PRIVATE) {
-            NetworkKind::Test
-        } else {
-            let (b0, b1, b2, b3) = (data[0], data[1], data[2], data[3]);
-            return Err(Error::UnknownVersion([b0, b1, b2, b3]));
+        let network = match network {
+            VERSION_BYTES_MAINNET_PRIVATE => NetworkKind::Main,
+            VERSION_BYTES_TESTNETS_PRIVATE => NetworkKind::Test,
+            unknown => return Err(Error::UnknownVersion(unknown)),
         };
+
+        let (&zero, private_key) = key.split_first();
+        if zero != 0 {
+            return Err(Error::InvalidPrivateKeyPrefix);
+        }
 
         Ok(Xpriv {
             network,
-            depth: data[4],
-            parent_fingerprint: data[5..9]
-                .try_into()
-                .expect("9 - 5 == 4, which is the Fingerprint length"),
-            child_number: u32::from_be_bytes(data[9..13].try_into().expect("4 byte slice")).into(),
-            chain_code: data[13..45]
-                .try_into()
-                .expect("45 - 13 == 32, which is the ChainCode length"),
-            private_key: secp256k1::SecretKey::from_slice(&data[46..78])?,
+            depth,
+            parent_fingerprint,
+            child_number,
+            chain_code,
+            private_key: secp256k1::SecretKey::from_byte_array(private_key)?,
         })
     }
 
@@ -732,7 +754,7 @@ impl Xpriv {
 
     /// Returns the first four bytes of the identifier
     pub fn fingerprint<C: secp256k1::Signing>(&self, secp: &Secp256k1<C>) -> Fingerprint {
-        self.identifier(secp).as_byte_array()[0..4].try_into().expect("4 is the fingerprint length")
+        self.identifier(secp).as_byte_array().sub_array::<0, 4>().into()
     }
 }
 
@@ -806,15 +828,15 @@ impl Xpub {
         match i {
             ChildNumber::Hardened { .. } => Err(Error::CannotDeriveFromHardenedKey),
             ChildNumber::Normal { index: n } => {
-                let mut hmac_engine: HmacEngine<sha512::Hash> =
-                    HmacEngine::new(&self.chain_code[..]);
-                hmac_engine.input(&self.public_key.serialize()[..]);
-                hmac_engine.input(&n.to_be_bytes());
+                let mut engine = HmacEngine::<sha512::HashEngine>::new(&self.chain_code[..]);
+                engine.input(&self.public_key.serialize()[..]);
+                engine.input(&n.to_be_bytes());
 
-                let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
-
-                let private_key = secp256k1::SecretKey::from_slice(&hmac_result.as_ref()[..32])?;
-                let chain_code = ChainCode::from_hmac(hmac_result);
+                let hmac = engine.finalize();
+                let private_key = secp256k1::SecretKey::from_byte_array(
+                    hmac.as_byte_array().split_array::<32, 32>().0
+                )?;
+                let chain_code = ChainCode::from_hmac(hmac);
                 Ok((private_key, chain_code))
             }
         }
@@ -841,30 +863,28 @@ impl Xpub {
 
     /// Decoding extended public key from binary data according to BIP 32
     pub fn decode(data: &[u8]) -> Result<Xpub, Error> {
-        if data.len() != 78 {
-            return Err(Error::WrongExtendedKeyLength(data.len()));
-        }
+        let Common {
+            network,
+            depth,
+            parent_fingerprint,
+            child_number,
+            chain_code,
+            key,
+        } = Common::decode(data)?;
 
-        let network = if data.starts_with(&VERSION_BYTES_MAINNET_PUBLIC) {
-            NetworkKind::Main
-        } else if data.starts_with(&VERSION_BYTES_TESTNETS_PUBLIC) {
-            NetworkKind::Test
-        } else {
-            let (b0, b1, b2, b3) = (data[0], data[1], data[2], data[3]);
-            return Err(Error::UnknownVersion([b0, b1, b2, b3]));
+        let network = match network {
+            VERSION_BYTES_MAINNET_PUBLIC => NetworkKind::Main,
+            VERSION_BYTES_TESTNETS_PUBLIC => NetworkKind::Test,
+            unknown => return Err(Error::UnknownVersion(unknown)),
         };
 
         Ok(Xpub {
             network,
-            depth: data[4],
-            parent_fingerprint: data[5..9]
-                .try_into()
-                .expect("9 - 5 == 4, which is the Fingerprint length"),
-            child_number: u32::from_be_bytes(data[9..13].try_into().expect("4 byte slice")).into(),
-            chain_code: data[13..45]
-                .try_into()
-                .expect("45 - 13 == 32, which is the ChainCode length"),
-            public_key: secp256k1::PublicKey::from_slice(&data[45..78])?,
+            depth,
+            parent_fingerprint,
+            child_number,
+            chain_code,
+            public_key: secp256k1::PublicKey::from_slice(&key)?,
         })
     }
 
@@ -890,7 +910,7 @@ impl Xpub {
 
     /// Returns the first four bytes of the identifier
     pub fn fingerprint(&self) -> Fingerprint {
-        self.identifier().as_byte_array()[0..4].try_into().expect("4 is the fingerprint length")
+        self.identifier().as_byte_array().sub_array::<0, 4>().into()
     }
 }
 
@@ -966,6 +986,48 @@ impl fmt::Display for InvalidBase58PayloadLengthError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for InvalidBase58PayloadLengthError {}
+
+// Helps unify decoding
+struct Common {
+    network: [u8; 4],
+    depth: u8,
+    parent_fingerprint: Fingerprint,
+    child_number: ChildNumber,
+    chain_code: ChainCode,
+    // public key (compressed) or 0 byte followed by a private key 
+    key: [u8; 33],
+}
+
+impl Common {
+    fn decode(data: &[u8]) -> Result<Self, Error> {
+        let data: &[u8; 78] = data.try_into().map_err(|_| Error::WrongExtendedKeyLength(data.len()))?;
+
+        let (&network, data) = data.split_array::<4, 74>();
+        let (&depth, data) = data.split_first::<73>();
+        let (&parent_fingerprint, data) = data.split_array::<4, 69>();
+        let (&child_number, data) = data.split_array::<4, 65>();
+        let (&chain_code, &key) = data.split_array::<32, 33>();
+
+        if depth == 0 {
+            if parent_fingerprint != [0u8; 4] {
+                return Err(Error::NonZeroParentFingerprintForMasterKey);
+            }
+
+            if child_number != [0u8; 4] {
+                return Err(Error::NonZeroChildNumberForMasterKey);
+            }
+        }
+
+        Ok(Common {
+            network,
+            depth,
+            parent_fingerprint: parent_fingerprint.into(),
+            child_number: u32::from_be_bytes(child_number).into(),
+            chain_code: chain_code.into(),
+            key,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1230,6 +1292,44 @@ mod tests {
     }
 
     #[test]
+    fn test_reject_xpriv_with_non_zero_byte_at_index_45() {
+        let mut xpriv = base58::decode_check("xprv9wSp6B7kry3Vj9m1zSnLvN3xH8RdsPP1Mh7fAaR7aRLcQMKTR2vidYEeEg2mUCTAwCd6vnxVrcjfy2kRgVsFawNzmjuHc2YmYRmagcEPdU9").unwrap();
+
+        // Modify byte at index 45 to be non-zero (e.g., 1)
+        xpriv[45] = 1;
+
+        let result = Xpriv::decode(&xpriv);
+        assert!(result.is_err());
+
+        match result {
+            Err(Error::InvalidPrivateKeyPrefix) => {}
+            _ => panic!("Expected InvalidPrivateKeyPrefix error, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_reject_xpriv_with_zero_depth_and_non_zero_index() {
+        let result = "xprv9s21ZrQH4r4TsiLvyLXqM9P7k1K3EYhA1kkD6xuquB5i39AU8KF42acDyL3qsDbU9NmZn6MsGSUYZEsuoePmjzsB3eFKSUEh3Gu1N3cqVUN".parse::<Xpriv>();
+        assert!(result.is_err());
+
+        match result {
+            Err(Error::NonZeroChildNumberForMasterKey) => {}
+            _ => panic!("Expected NonZeroChildNumberForMasterKey error, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_reject_xpriv_with_zero_depth_and_non_zero_parent_fingerprint() {
+        let result = "xprv9s2SPatNQ9Vc6GTbVMFPFo7jsaZySyzk7L8n2uqKXJen3KUmvQNTuLh3fhZMBoG3G4ZW1N2kZuHEPY53qmbZzCHshoQnNf4GvELZfqTUrcv".parse::<Xpriv>();
+        assert!(result.is_err());
+
+        match result {
+            Err(Error::NonZeroParentFingerprintForMasterKey) => {}
+            _ => panic!("Expected NonZeroParentFingerprintForMasterKey error, got {:?}", result),
+        }
+    }
+
+    #[test]
     #[cfg(feature = "serde")]
     pub fn encode_decode_childnumber() {
         serde_round_trip!(ChildNumber::ZERO_NORMAL);
@@ -1309,5 +1409,34 @@ mod tests {
         // Xpriv having secret key set to all 0xFF's
         let xpriv_str = "xprv9s21ZrQH143K24Mfq5zL5MhWK9hUhhGbd45hLXo2Pq2oqzMMo63oStZzFAzHGBP2UuGCqWLTAPLcMtD9y5gkZ6Eq3Rjuahrv17fENZ3QzxW";
         xpriv_str.parse::<Xpriv>().unwrap();
+    }
+
+    #[test]
+    fn official_vectors_5() {
+        let invalid_keys = [
+            "xpub661MyMwAqRbcEYS8w7XLSVeEsBXy79zSzH1J8vCdxAZningWLdN3zgtU6LBpB85b3D2yc8sfvZU521AAwdZafEz7mnzBBsz4wKY5fTtTQBm",
+            "xprv9s21ZrQH143K24Mfq5zL5MhWK9hUhhGbd45hLXo2Pq2oqzMMo63oStZzFGTQQD3dC4H2D5GBj7vWvSQaaBv5cxi9gafk7NF3pnBju6dwKvH",
+            "xpub661MyMwAqRbcEYS8w7XLSVeEsBXy79zSzH1J8vCdxAZningWLdN3zgtU6Txnt3siSujt9RCVYsx4qHZGc62TG4McvMGcAUjeuwZdduYEvFn",
+            "xprv9s21ZrQH143K24Mfq5zL5MhWK9hUhhGbd45hLXo2Pq2oqzMMo63oStZzFGpWnsj83BHtEy5Zt8CcDr1UiRXuWCmTQLxEK9vbz5gPstX92JQ",
+            "xpub661MyMwAqRbcEYS8w7XLSVeEsBXy79zSzH1J8vCdxAZningWLdN3zgtU6N8ZMMXctdiCjxTNq964yKkwrkBJJwpzZS4HS2fxvyYUA4q2Xe4",
+            "xprv9s21ZrQH143K24Mfq5zL5MhWK9hUhhGbd45hLXo2Pq2oqzMMo63oStZzFAzHGBP2UuGCqWLTAPLcMtD9y5gkZ6Eq3Rjuahrv17fEQ3Qen6J",
+            "xprv9s2SPatNQ9Vc6GTbVMFPFo7jsaZySyzk7L8n2uqKXJen3KUmvQNTuLh3fhZMBoG3G4ZW1N2kZuHEPY53qmbZzCHshoQnNf4GvELZfqTUrcv",
+            "xpub661no6RGEX3uJkY4bNnPcw4URcQTrSibUZ4NqJEw5eBkv7ovTwgiT91XX27VbEXGENhYRCf7hyEbWrR3FewATdCEebj6znwMfQkhRYHRLpJ",
+            "xprv9s21ZrQH4r4TsiLvyLXqM9P7k1K3EYhA1kkD6xuquB5i39AU8KF42acDyL3qsDbU9NmZn6MsGSUYZEsuoePmjzsB3eFKSUEh3Gu1N3cqVUN",
+            "xpub661MyMwAuDcm6CRQ5N4qiHKrJ39Xe1R1NyfouMKTTWcguwVcfrZJaNvhpebzGerh7gucBvzEQWRugZDuDXjNDRmXzSZe4c7mnTK97pTvGS8",
+            "DMwo58pR1QLEFihHiXPVykYB6fJmsTeHvyTp7hRThAtCX8CvYzgPcn8XnmdfHGMQzT7ayAmfo4z3gY5KfbrZWZ6St24UVf2Qgo6oujFktLHdHY4",
+            "DMwo58pR1QLEFihHiXPVykYB6fJmsTeHvyTp7hRThAtCX8CvYzgPcn8XnmdfHPmHJiEDXkTiJTVV9rHEBUem2mwVbbNfvT2MTcAqj3nesx8uBf9",
+            "xprv9s21ZrQH143K24Mfq5zL5MhWK9hUhhGbd45hLXo2Pq2oqzMMo63oStZzF93Y5wvzdUayhgkkFoicQZcP3y52uPPxFnfoLZB21Teqt1VvEHx",
+            "xprv9s21ZrQH143K24Mfq5zL5MhWK9hUhhGbd45hLXo2Pq2oqzMMo63oStZzFAzHGBP2UuGCqWLTAPLcMtD5SDKr24z3aiUvKr9bJpdrcLg1y3G",
+            "xpub661MyMwAqRbcEYS8w7XLSVeEsBXy79zSzH1J8vCdxAZningWLdN3zgtU6Q5JXayek4PRsn35jii4veMimro1xefsM58PgBMrvdYre8QyULY",
+            "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHL",
+        ];
+        for key in invalid_keys {
+            if key.starts_with("xpub") {
+                key.parse::<Xpub>().unwrap_err();
+            } else {
+                key.parse::<Xpriv>().unwrap_err();
+            }
+        }
     }
 }

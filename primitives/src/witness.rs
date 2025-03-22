@@ -12,6 +12,7 @@ use arbitrary::{Arbitrary, Unstructured};
 use hex::DisplayHex;
 use internals::compact_size;
 use internals::wrap_debug::WrapDebug;
+use internals::slice::SliceExt;
 
 use crate::prelude::Vec;
 
@@ -99,18 +100,22 @@ impl Witness {
     }
 
     /// Convenience method to create an array of byte-arrays from this witness.
-    pub fn to_vec(&self) -> Vec<Vec<u8>> { self.iter().map(|s| s.to_vec()).collect() }
+    #[inline]
+    pub fn to_vec(&self) -> Vec<Vec<u8>> { self.iter().map(<[u8]>::to_vec).collect() }
 
     /// Returns `true` if the witness contains no element.
+    #[inline]
     pub fn is_empty(&self) -> bool { self.witness_elements == 0 }
 
     /// Returns a struct implementing [`Iterator`].
     #[must_use = "iterators are lazy and do nothing unless consumed"]
+    #[inline]
     pub fn iter(&self) -> Iter {
         Iter { inner: self.content.as_slice(), indices_start: self.indices_start, current_index: 0 }
     }
 
     /// Returns the number of elements this witness holds.
+    #[inline]
     pub fn len(&self) -> usize { self.witness_elements }
 
     /// Returns the number of bytes this witness contributes to a transactions total size.
@@ -130,6 +135,7 @@ impl Witness {
     }
 
     /// Clear the witness.
+    #[inline]
     pub fn clear(&mut self) {
         self.content.clear();
         self.witness_elements = 0;
@@ -137,6 +143,7 @@ impl Witness {
     }
 
     /// Push a new element on the witness, requires an allocation.
+    #[inline]
     pub fn push<T: AsRef<[u8]>>(&mut self, new_element: T) {
         self.push_slice(new_element.as_ref());
     }
@@ -166,48 +173,51 @@ impl Witness {
             .copy_from_slice(new_element);
     }
 
-    /// Note `index` is the index into the `content` vector and should be the result of calling
-    /// `decode_cursor`, which returns a valid index.
-    fn element_at(&self, index: usize) -> Option<&[u8]> {
-        let mut slice = &self.content[index..]; // Start of element.
+    /// Returns the last element in the witness, if any.
+    #[inline]
+    pub fn last(&self) -> Option<&[u8]> { self.get_back(0) }
+
+    /// Retrieves an element from the end of the witness by its reverse index.
+    ///
+    /// `index` is 0-based from the end, where 0 is the last element, 1 is the second-to-last, etc.
+    ///
+    /// Returns `None` if the requested index is beyond the witness's elements.
+    ///
+    /// # Examples
+    /// ```
+    /// use bitcoin_primitives::witness::Witness;
+    ///
+    /// let mut witness = Witness::new();
+    /// witness.push(b"A");
+    /// witness.push(b"B");
+    /// witness.push(b"C");
+    /// witness.push(b"D");
+    ///
+    /// assert_eq!(witness.get_back(0), Some(b"D".as_slice()));
+    /// assert_eq!(witness.get_back(1), Some(b"C".as_slice()));
+    /// assert_eq!(witness.get_back(2), Some(b"B".as_slice()));
+    /// assert_eq!(witness.get_back(3), Some(b"A".as_slice()));
+    /// assert_eq!(witness.get_back(4), None);
+    /// ```
+    pub fn get_back(&self, index: usize) -> Option<&[u8]> {
+        if self.witness_elements <= index {
+            None
+        } else {
+            self.get(self.witness_elements - 1 - index)
+        }
+    }
+
+    /// Returns a specific element from the witness by its index, if any.
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&[u8]> {
+        let pos = decode_cursor(&self.content, self.indices_start, index)?;
+
+        let mut slice = &self.content[pos..]; // Start of element.
         let element_len = compact_size::decode_unchecked(&mut slice);
         // Compact size should always fit into a u32 because of `MAX_SIZE` in Core.
         // ref: https://github.com/rust-bitcoin/rust-bitcoin/issues/3264
         let end = element_len as usize;
         Some(&slice[..end])
-    }
-
-    /// Returns the last element in the witness, if any.
-    pub fn last(&self) -> Option<&[u8]> {
-        if self.witness_elements == 0 {
-            None
-        } else {
-            self.nth(self.witness_elements - 1)
-        }
-    }
-
-    /// Returns the second-to-last element in the witness, if any.
-    pub fn second_to_last(&self) -> Option<&[u8]> {
-        if self.witness_elements <= 1 {
-            None
-        } else {
-            self.nth(self.witness_elements - 2)
-        }
-    }
-
-    /// Returns the third-to-last element in the witness, if any.
-    pub fn third_to_last(&self) -> Option<&[u8]> {
-        if self.witness_elements <= 2 {
-            None
-        } else {
-            self.nth(self.witness_elements - 3)
-        }
-    }
-
-    /// Return the nth element in the witness, if any
-    pub fn nth(&self, index: usize) -> Option<&[u8]> {
-        let pos = decode_cursor(&self.content, self.indices_start, index)?;
-        self.element_at(pos)
     }
 }
 
@@ -225,21 +235,17 @@ fn encode_cursor(bytes: &mut [u8], start_of_indices: usize, index: usize, value:
 #[inline]
 fn decode_cursor(bytes: &[u8], start_of_indices: usize, index: usize) -> Option<usize> {
     let start = start_of_indices + index * 4;
-    let end = start + 4;
-    if end > bytes.len() {
-        None
-    } else {
-        Some(u32::from_ne_bytes(bytes[start..end].try_into().expect("is u32 size")) as usize)
-    }
+    bytes.get_array::<4>(start).map(|index_bytes| u32::from_ne_bytes(*index_bytes) as usize)
 }
 
 /// Debug implementation that displays the witness as a structured output containing:
 /// - Number of witness elements
 /// - Total bytes across all elements
 /// - List of hex-encoded witness elements
+#[allow(clippy::missing_fields_in_debug)] // We don't want to show `indices_start`.
 impl fmt::Debug for Witness {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let total_bytes: usize = self.iter().map(|elem| elem.len()).sum();
+        let total_bytes: usize = self.iter().map(<[u8]>::len).sum();
 
         f.debug_struct("Witness")
             .field("num_elements", &self.witness_elements)
@@ -247,7 +253,7 @@ impl fmt::Debug for Witness {
             .field(
                 "elements",
                 &WrapDebug(|f| {
-                    f.debug_list().entries(self.iter().map(|elem| elem.as_hex())).finish()
+                    f.debug_list().entries(self.iter().map(DisplayHex::as_hex)).finish()
                 }),
             )
             .finish()
@@ -264,7 +270,9 @@ pub struct Iter<'a> {
 impl Index<usize> for Witness {
     type Output = [u8];
 
-    fn index(&self, index: usize) -> &Self::Output { self.nth(index).expect("out of bounds") }
+    #[track_caller]
+    #[inline]
+    fn index(&self, index: usize) -> &Self::Output { self.get(index).expect("out of bounds") }
 }
 
 impl<'a> Iterator for Iter<'a> {
@@ -281,6 +289,7 @@ impl<'a> Iterator for Iter<'a> {
         Some(&slice[..end])
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let total_count = (self.inner.len() - self.indices_start) / 4;
         let remaining = total_count - self.current_index;
@@ -294,6 +303,7 @@ impl<'a> IntoIterator for &'a Witness {
     type IntoIter = Iter<'a>;
     type Item = &'a [u8];
 
+    #[inline]
     fn into_iter(self) -> Self::IntoIter { self.iter() }
 }
 
@@ -310,7 +320,7 @@ impl serde::Serialize for Witness {
         let mut seq = serializer.serialize_seq(Some(self.witness_elements))?;
 
         // Note that the `Iter` strips the varints out when iterating.
-        for elem in self.iter() {
+        for elem in self {
             if human_readable {
                 seq.serialize_element(&internals::serde::SerializeBytesAsHex(elem))?;
             } else {
@@ -341,8 +351,7 @@ impl<'de> serde::Deserialize<'de> for Witness {
                 self,
                 mut a: A,
             ) -> Result<Self::Value, A::Error> {
-                use hex::FromHex;
-                use hex::HexToBytesError::*;
+                use hex::{FromHex, HexToBytesError as E};
                 use serde::de::{self, Unexpected};
 
                 let mut ret = match a.size_hint() {
@@ -352,17 +361,18 @@ impl<'de> serde::Deserialize<'de> for Witness {
 
                 while let Some(elem) = a.next_element::<String>()? {
                     let vec = Vec::<u8>::from_hex(&elem).map_err(|e| match e {
-                        InvalidChar(ref e) => match core::char::from_u32(e.invalid_char().into()) {
-                            Some(c) => de::Error::invalid_value(
-                                Unexpected::Char(c),
-                                &"a valid hex character",
-                            ),
-                            None => de::Error::invalid_value(
-                                Unexpected::Unsigned(e.invalid_char().into()),
-                                &"a valid hex character",
-                            ),
-                        },
-                        OddLengthString(ref e) =>
+                        E::InvalidChar(ref e) =>
+                            match core::char::from_u32(e.invalid_char().into()) {
+                                Some(c) => de::Error::invalid_value(
+                                    Unexpected::Char(c),
+                                    &"a valid hex character",
+                                ),
+                                None => de::Error::invalid_value(
+                                    Unexpected::Unsigned(e.invalid_char().into()),
+                                    &"a valid hex character",
+                                ),
+                            },
+                        E::OddLengthString(ref e) =>
                             de::Error::invalid_length(e.length(), &"an even length string"),
                     })?;
                     ret.push(vec);
@@ -381,22 +391,27 @@ impl<'de> serde::Deserialize<'de> for Witness {
 }
 
 impl From<Vec<Vec<u8>>> for Witness {
+    #[inline]
     fn from(vec: Vec<Vec<u8>>) -> Self { Witness::from_slice(&vec) }
 }
 
 impl From<&[&[u8]]> for Witness {
+    #[inline]
     fn from(slice: &[&[u8]]) -> Self { Witness::from_slice(slice) }
 }
 
 impl From<&[Vec<u8>]> for Witness {
+    #[inline]
     fn from(slice: &[Vec<u8>]) -> Self { Witness::from_slice(slice) }
 }
 
 impl From<Vec<&[u8]>> for Witness {
+    #[inline]
     fn from(vec: Vec<&[u8]>) -> Self { Witness::from_slice(&vec) }
 }
 
 impl Default for Witness {
+    #[inline]
     fn default() -> Self { Self::new() }
 }
 
@@ -441,7 +456,7 @@ mod test {
         let mut got = Witness::new();
         got.push([]);
         let want = single_empty_element();
-        assert_eq!(got, want)
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -450,12 +465,12 @@ mod test {
         let mut witness = Witness::default();
         assert!(witness.is_empty());
         assert_eq!(witness.last(), None);
-        assert_eq!(witness.second_to_last(), None);
+        assert_eq!(witness.get_back(1), None);
 
-        assert_eq!(witness.nth(0), None);
-        assert_eq!(witness.nth(1), None);
-        assert_eq!(witness.nth(2), None);
-        assert_eq!(witness.nth(3), None);
+        assert_eq!(witness.get(0), None);
+        assert_eq!(witness.get(1), None);
+        assert_eq!(witness.get(2), None);
+        assert_eq!(witness.get(3), None);
 
         // Push a single byte element onto the witness stack.
         let push = [11_u8];
@@ -473,13 +488,13 @@ mod test {
         let element_0 = push.as_slice();
         assert_eq!(element_0, &witness[0]);
 
-        assert_eq!(witness.second_to_last(), None);
+        assert_eq!(witness.get_back(1), None);
         assert_eq!(witness.last(), Some(element_0));
 
-        assert_eq!(witness.nth(0), Some(element_0));
-        assert_eq!(witness.nth(1), None);
-        assert_eq!(witness.nth(2), None);
-        assert_eq!(witness.nth(3), None);
+        assert_eq!(witness.get(0), Some(element_0));
+        assert_eq!(witness.get(1), None);
+        assert_eq!(witness.get(2), None);
+        assert_eq!(witness.get(3), None);
 
         // Now push 2 byte element onto the witness stack.
         let push = [21u8, 22u8];
@@ -496,12 +511,12 @@ mod test {
         let element_1 = push.as_slice();
         assert_eq!(element_1, &witness[1]);
 
-        assert_eq!(witness.nth(0), Some(element_0));
-        assert_eq!(witness.nth(1), Some(element_1));
-        assert_eq!(witness.nth(2), None);
-        assert_eq!(witness.nth(3), None);
+        assert_eq!(witness.get(0), Some(element_0));
+        assert_eq!(witness.get(1), Some(element_1));
+        assert_eq!(witness.get(2), None);
+        assert_eq!(witness.get(3), None);
 
-        assert_eq!(witness.second_to_last(), Some(element_0));
+        assert_eq!(witness.get_back(1), Some(element_0));
         assert_eq!(witness.last(), Some(element_1));
 
         // Now push another 2 byte element onto the witness stack.
@@ -519,13 +534,13 @@ mod test {
         let element_2 = push.as_slice();
         assert_eq!(element_2, &witness[2]);
 
-        assert_eq!(witness.nth(0), Some(element_0));
-        assert_eq!(witness.nth(1), Some(element_1));
-        assert_eq!(witness.nth(2), Some(element_2));
-        assert_eq!(witness.nth(3), None);
+        assert_eq!(witness.get(0), Some(element_0));
+        assert_eq!(witness.get(1), Some(element_1));
+        assert_eq!(witness.get(2), Some(element_2));
+        assert_eq!(witness.get(3), None);
 
-        assert_eq!(witness.third_to_last(), Some(element_0));
-        assert_eq!(witness.second_to_last(), Some(element_1));
+        assert_eq!(witness.get_back(2), Some(element_0));
+        assert_eq!(witness.get_back(1), Some(element_1));
         assert_eq!(witness.last(), Some(element_2));
     }
 
@@ -556,8 +571,8 @@ mod test {
         let indices_start = elements.len();
         let witness =
             Witness::from_parts__unstable(content.clone(), witness_elements, indices_start);
-        assert_eq!(witness.nth(0).unwrap(), [11_u8]);
-        assert_eq!(witness.nth(1).unwrap(), [21_u8, 22]);
+        assert_eq!(witness.get(0).unwrap(), [11_u8]);
+        assert_eq!(witness.get(1).unwrap(), [21_u8, 22]);
         assert_eq!(witness.size(), 6);
     }
 

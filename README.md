@@ -132,7 +132,7 @@ or [`hashes/embedded`](https://github.com/rust-bitcoin/rust-bitcoin/tree/master/
 ### Just
 
 We support [`just`](https://just.systems/man/en/) for running dev workflow commands. Run `just` from
-your shell to see list available sub-commands.
+your shell to see a list of available sub-commands.
 
 ### Building the docs
 
@@ -148,8 +148,8 @@ alias build-docs='RUSTDOCFLAGS="--cfg docsrs" cargo +nightly rustdoc --features=
 Unit and integration tests are available for those interested, along with benchmarks. For project
 developers, especially new contributors looking for something to work on, we do:
 
-- Fuzz testing with [`Hongfuzz`](https://github.com/rust-fuzz/honggfuzz-rs)
-- Mutation testing with [`Mutagen`](https://github.com/llogiq/mutagen)
+- Fuzz testing with [`Honggfuzz`](https://github.com/rust-fuzz/honggfuzz-rs)
+- Mutation testing with [`cargo-mutants`](https://github.com/sourcefrog/cargo-mutants)
 - Code verification with [`Kani`](https://github.com/model-checking/kani)
 
 There are always more tests to write and more bugs to find, contributions to our testing efforts
@@ -167,9 +167,9 @@ bench marks use: `RUSTFLAGS='--cfg=bench' cargo +nightly bench`.
 
 ### Mutation tests
 
-We have started doing mutation testing with [mutagen](https://github.com/llogiq/mutagen). To run
-these tests first install the latest dev version with `cargo +nightly install --git https://github.com/llogiq/mutagen`
-then run with `RUSTFLAGS='--cfg=mutate' cargo +nightly mutagen`.
+We are doing mutation testing with [cargo-mutants](https://github.com/sourcefrog/cargo-mutants). To run
+these tests first install with `cargo install --locked cargo-mutants` then run with `cargo mutants --in-place --no-shuffle`.
+Note that running these mutation tests will take on the order of 10's of minutes.
 
 ### Code verification
 

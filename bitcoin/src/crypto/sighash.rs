@@ -429,6 +429,14 @@ impl EcdsaSighashType {
         }
     }
 
+    /// Checks if the sighash type is [`Self::Single`] or [`Self::SinglePlusAnyoneCanPay`].
+    ///
+    /// This matches Bitcoin Core's behavior where SIGHASH_SINGLE bug check is based on the base
+    /// type (after masking with 0x1f), regardless of the ANYONECANPAY flag.
+    ///
+    /// See: <https://github.com/bitcoin/bitcoin/blob/e486597/src/script/interpreter.cpp#L1618-L1619>
+    pub fn is_single(&self) -> bool { matches!(self, Self::Single | Self::SinglePlusAnyoneCanPay) }
+
     /// Constructs a new [`EcdsaSighashType`] from a raw `u32`.
     ///
     /// **Note**: this replicates consensus behaviour, for current standardness rules correctness
@@ -1363,7 +1371,7 @@ impl std::error::Error for AnnexError {
 
 fn is_invalid_use_of_sighash_single(sighash: u32, input_index: usize, outputs_len: usize) -> bool {
     let ty = EcdsaSighashType::from_consensus(sighash);
-    ty == EcdsaSighashType::Single && input_index >= outputs_len
+    ty.is_single() && input_index >= outputs_len
 }
 
 /// Result of [`SighashCache::legacy_encode_signing_data_to`].
@@ -1538,8 +1546,6 @@ mod tests {
 
     #[test]
     fn sighash_single_bug() {
-        const SIGHASH_SINGLE: u32 = 3;
-
         // We need a tx with more inputs than outputs.
         let tx = Transaction {
             version: transaction::Version::ONE,
@@ -1550,10 +1556,16 @@ mod tests {
         let script = ScriptBuf::new();
         let cache = SighashCache::new(&tx);
 
-        let got = cache.legacy_signature_hash(1, &script, SIGHASH_SINGLE).expect("sighash");
+        let sighash_single = 3;
+        let got = cache.legacy_signature_hash(1, &script, sighash_single).expect("sighash");
         let want = LegacySighash::from_byte_array(UINT256_ONE);
+        assert_eq!(got, want);
 
-        assert_eq!(got, want)
+        // https://github.com/rust-bitcoin/rust-bitcoin/issues/4112
+        let sighash_single = 131;
+        let got = cache.legacy_signature_hash(1, &script, sighash_single).expect("sighash");
+        let want = LegacySighash::from_byte_array(UINT256_ONE);
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -1850,8 +1862,6 @@ mod tests {
     fn bip_341_sighash_tests() {
         use hex::DisplayHex;
 
-        use crate::taproot::TapTweakHashExt as _;
-
         fn sighash_deser_numeric<'de, D>(deserializer: D) -> Result<TapSighashType, D::Error>
         where
             D: serde::Deserializer<'de>,
@@ -2015,7 +2025,8 @@ mod tests {
                 .unwrap();
 
             let msg = secp256k1::Message::from(sighash);
-            let key_spend_sig = secp.sign_schnorr_with_aux_rand(&msg, &tweaked_keypair, &[0u8; 32]);
+            let key_spend_sig =
+                secp.sign_schnorr_with_aux_rand(msg.as_ref(), &tweaked_keypair, &[0u8; 32]);
 
             assert_eq!(expected.internal_pubkey, internal_key);
             assert_eq!(expected.tweak, tweak);
@@ -2078,7 +2089,7 @@ mod tests {
         ).unwrap();
 
         let spk = ScriptBuf::from_hex("00141d0f172a0ecb48aee1be1f2687d2963ae33f71a1").unwrap();
-        let value = Amount::from_sat_unchecked(600_000_000);
+        let value = Amount::from_sat_u32(600_000_000);
 
         let mut cache = SighashCache::new(&tx);
         assert_eq!(
@@ -2119,7 +2130,7 @@ mod tests {
 
         let redeem_script =
             ScriptBuf::from_hex("001479091972186c449eb1ded22b78e40d009bdf0089").unwrap();
-        let value = Amount::from_sat_unchecked(1_000_000_000);
+        let value = Amount::from_sat_u32(1_000_000_000);
 
         let mut cache = SighashCache::new(&tx);
         assert_eq!(
@@ -2169,7 +2180,7 @@ mod tests {
         )
         .unwrap();
 
-        let value = Amount::from_sat_unchecked(987_654_321);
+        let value = Amount::from_sat_u32(987_654_321);
         (tx, witness_script, value)
     }
 

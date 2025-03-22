@@ -7,6 +7,7 @@
 
 pub mod block;
 pub mod constants;
+pub mod opcodes;
 pub mod script;
 pub mod transaction;
 pub mod witness;
@@ -20,6 +21,8 @@ pub use self::{
 
 /// Implements `FeeRate` and assoctiated features.
 pub mod fee_rate {
+    #[cfg(feature = "serde")]
+    pub use units::fee_rate::serde;
     /// Re-export everything from the [`units::fee_rate`] module.
     pub use units::fee_rate::FeeRate;
 }
@@ -68,12 +71,6 @@ pub mod locktime {
             LockTime, Time, TimeOverflowError,
         };
     }
-}
-
-/// Bitcoin script opcodes.
-pub mod opcodes {
-    /// Re-export everything from the [`primitives::opcodes`] module.
-    pub use primitives::opcodes::*;
 }
 
 /// Implements `Weight` and associated features.

@@ -183,8 +183,8 @@ crate::internal_macros::define_extension_trait! {
         /// To use a custom value, use [`minimal_non_dust_custom`].
         ///
         /// [`minimal_non_dust_custom`]: TxOut::minimal_non_dust_custom
-        fn minimal_non_dust(script_pubkey: ScriptBuf) -> Self {
-            TxOut { value: script_pubkey.minimal_non_dust(), script_pubkey }
+        fn minimal_non_dust(script_pubkey: ScriptBuf) -> Option<TxOut> {
+            Some(TxOut { value: script_pubkey.minimal_non_dust()?, script_pubkey })
         }
 
         /// Constructs a new `TxOut` with given script and the smallest possible `value` that is **not** dust
@@ -198,8 +198,8 @@ crate::internal_macros::define_extension_trait! {
         /// To use the default Bitcoin Core value, use [`minimal_non_dust`].
         ///
         /// [`minimal_non_dust`]: TxOut::minimal_non_dust
-        fn minimal_non_dust_custom(script_pubkey: ScriptBuf, dust_relay_fee: FeeRate) -> Self {
-            TxOut { value: script_pubkey.minimal_non_dust_custom(dust_relay_fee), script_pubkey }
+        fn minimal_non_dust_custom(script_pubkey: ScriptBuf, dust_relay_fee: FeeRate) -> Option<TxOut> {
+            Some(TxOut { value: script_pubkey.minimal_non_dust_custom(dust_relay_fee)?, script_pubkey })
         }
     }
 }
@@ -414,7 +414,7 @@ impl TransactionExt for Transaction {
 
         // coinbase tx is correctly handled because `spent` will always returns None.
         cost = cost.saturating_add(self.count_p2sh_sigops(&mut spent).saturating_mul(4));
-        cost.saturating_add(self.count_witness_sigops(&mut spent))
+        cost.saturating_add(self.count_witness_sigops(spent))
     }
 
     #[inline]
@@ -433,7 +433,7 @@ impl TransactionExt for Transaction {
 }
 
 /// Iterates over transaction outputs and for each output yields the length of the scriptPubkey.
-// This exists to hardcode the type of the closure crated by `map`.
+// This exists to hardcode the type of the closure created by `map`.
 pub struct TxOutToScriptPubkeyLengthIter<'a> {
     inner: core::slice::Iter<'a, TxOut>,
 }
@@ -453,12 +453,12 @@ trait TransactionExtPriv {
     fn count_p2pk_p2pkh_sigops(&self) -> usize;
 
     /// Does not include wrapped SegWit (see `count_witness_sigops`).
-    fn count_p2sh_sigops<S>(&self, spent: &mut S) -> usize
+    fn count_p2sh_sigops<S>(&self, spent: S) -> usize
     where
         S: FnMut(&OutPoint) -> Option<TxOut>;
 
     /// Includes wrapped SegWit (returns 0 for Taproot spends).
-    fn count_witness_sigops<S>(&self, spent: &mut S) -> usize
+    fn count_witness_sigops<S>(&self, spent: S) -> usize
     where
         S: FnMut(&OutPoint) -> Option<TxOut>;
 
@@ -481,7 +481,7 @@ impl TransactionExtPriv for Transaction {
     }
 
     /// Does not include wrapped SegWit (see `count_witness_sigops`).
-    fn count_p2sh_sigops<S>(&self, spent: &mut S) -> usize
+    fn count_p2sh_sigops<S>(&self, mut spent: S) -> usize
     where
         S: FnMut(&OutPoint) -> Option<TxOut>,
     {
@@ -506,7 +506,7 @@ impl TransactionExtPriv for Transaction {
     }
 
     /// Includes wrapped SegWit (returns 0 for Taproot spends).
-    fn count_witness_sigops<S>(&self, spent: &mut S) -> usize
+    fn count_witness_sigops<S>(&self, mut spent: S) -> usize
     where
         S: FnMut(&OutPoint) -> Option<TxOut>,
     {
@@ -999,7 +999,7 @@ impl InputWeightPrediction {
     ///
     /// # Panics
     ///
-    /// The funcion panics in const context and debug builds if `bytes_to_grind` is higher than 62.
+    /// The function panics in const context and debug builds if `bytes_to_grind` is higher than 62.
     ///
     /// [signature grinding]: https://bitcoin.stackexchange.com/questions/111660/what-is-signature-grinding
     pub const fn ground_p2wpkh(bytes_to_grind: usize) -> Self {
@@ -1019,7 +1019,7 @@ impl InputWeightPrediction {
     ///
     /// # Panics
     ///
-    /// The funcion panics in const context and debug builds if `bytes_to_grind` is higher than 62.
+    /// The function panics in const context and debug builds if `bytes_to_grind` is higher than 62.
     ///
     /// [nested P2WPKH]: https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#p2wpkh-nested-in-bip16-p2sh
     /// [signature grinding]: https://bitcoin.stackexchange.com/questions/111660/what-is-signature-grinding
@@ -1040,7 +1040,7 @@ impl InputWeightPrediction {
     ///
     /// # Panics
     ///
-    /// The funcion panics in const context and debug builds if `bytes_to_grind` is higher than 62.
+    /// The function panics in const context and debug builds if `bytes_to_grind` is higher than 62.
     ///
     /// [signature grinding]: https://bitcoin.stackexchange.com/questions/111660/what-is-signature-grinding
     pub const fn ground_p2pkh_compressed(bytes_to_grind: usize) -> Self {

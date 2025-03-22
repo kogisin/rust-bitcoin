@@ -39,6 +39,7 @@ pub use self::{
     signed::SignedAmount,
     unsigned::Amount,
 };
+pub(crate) use self::result::OptionExt;
 
 /// A set of denominations in which amounts can be expressed.
 ///
@@ -58,7 +59,7 @@ pub use self::{
 /// # Examples
 ///
 /// ```
-/// # use bitcoin_units::Amount;
+/// # use bitcoin_units::{amount, Amount};
 ///
 /// let equal = [
 ///     ("1 BTC", 100_000_000),
@@ -71,9 +72,10 @@ pub use self::{
 /// for (string, sats) in equal {
 ///     assert_eq!(
 ///         string.parse::<Amount>().expect("valid bitcoin amount string"),
-///         Amount::from_sat(sats),
+///         Amount::from_sat(sats)?,
 ///     )
 /// }
+/// # Ok::<_, amount::OutOfRangeError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[non_exhaustive]
@@ -91,6 +93,10 @@ pub enum Denomination {
     Bit,
     /// satoshi (1 BTC = 100,000,000 satoshi).
     Satoshi,
+    /// Stops users from casting this enum to an integer.
+    // May get removed if one day Rust supports disabling casts natively.
+    #[doc(hidden)]
+    _DoNotUse(Infallible),
 }
 
 impl Denomination {
@@ -109,6 +115,7 @@ impl Denomination {
             Denomination::MicroBitcoin => -2,
             Denomination::Bit => -2,
             Denomination::Satoshi => 0,
+            Denomination::_DoNotUse(infallible) => match infallible {},
         }
     }
 
@@ -121,6 +128,7 @@ impl Denomination {
             Denomination::MicroBitcoin => "uBTC",
             Denomination::Bit => "bits",
             Denomination::Satoshi => "satoshi",
+            Denomination::_DoNotUse(infallible) => match infallible {},
         }
     }
 
@@ -139,7 +147,7 @@ impl Denomination {
     }
 }
 
-/// These form are ambigous and could have many meanings.  For example, M could denote Mega or Milli.
+/// These form are ambiguous and could have many meanings.  For example, M could denote Mega or Milli.
 /// If any of these forms are used, an error type `PossiblyConfusingDenomination` is returned.
 const CONFUSING_FORMS: [&str; 6] = ["CBTC", "Cbtc", "MBTC", "Mbtc", "UBTC", "Ubtc"];
 
@@ -194,10 +202,12 @@ const INPUT_STRING_LEN_LIMIT: usize = 50;
 
 /// Parses a decimal string in the given denomination into a satoshi value and a
 /// [`bool`] indicator for a negative amount.
+///
+/// The `bool` is only needed to distinguish -0 from 0.
 fn parse_signed_to_satoshi(
     mut s: &str,
     denom: Denomination,
-) -> Result<(bool, u64), InnerParseError> {
+) -> Result<(bool, SignedAmount), InnerParseError> {
     if s.is_empty() {
         return Err(InnerParseError::MissingDigits(MissingDigitsError {
             kind: MissingDigitsKind::Empty,
@@ -229,7 +239,7 @@ fn parse_signed_to_satoshi(
             let last_n = precision_diff.unsigned_abs().into();
             if let Some(position) = is_too_precise(s, last_n) {
                 match s.parse::<i64>() {
-                    Ok(0) => return Ok((is_negative, 0)),
+                    Ok(0) => return Ok((is_negative, SignedAmount::ZERO)),
                     _ =>
                         return Err(InnerParseError::TooPrecise(TooPreciseError {
                             position: position + usize::from(is_negative),
@@ -244,14 +254,14 @@ fn parse_signed_to_satoshi(
     };
 
     let mut decimals = None;
-    let mut value: u64 = 0; // as satoshis
+    let mut value: i64 = 0; // as satoshis
     for (i, c) in s.char_indices() {
         match c {
             '0'..='9' => {
                 // Do `value = 10 * value + digit`, catching overflows.
-                match 10_u64.checked_mul(value) {
+                match 10_i64.checked_mul(value) {
                     None => return Err(InnerParseError::Overflow { is_negative }),
-                    Some(val) => match val.checked_add(u64::from(c as u8 - b'0')) {
+                    Some(val) => match val.checked_add(i64::from(c as u8 - b'0')) {
                         None => return Err(InnerParseError::Overflow { is_negative }),
                         Some(val) => value = val,
                     },
@@ -287,13 +297,18 @@ fn parse_signed_to_satoshi(
     // Decimally shift left by `max_decimals - decimals`.
     let scale_factor = max_decimals - decimals.unwrap_or(0);
     for _ in 0..scale_factor {
-        value = match 10_u64.checked_mul(value) {
+        value = match 10_i64.checked_mul(value) {
             Some(v) => v,
             None => return Err(InnerParseError::Overflow { is_negative }),
         };
     }
 
-    Ok((is_negative, value))
+    let mut ret =
+        SignedAmount::from_sat(value).map_err(|_| InnerParseError::Overflow { is_negative })?;
+    if is_negative {
+        ret = -ret;
+    }
+    Ok((is_negative, ret))
 }
 
 #[derive(Debug)]
@@ -582,8 +597,8 @@ enum DisplayStyle {
 
 /// Calculates the sum over the iterator using checked arithmetic.
 pub trait CheckedSum<R>: sealed::Sealed<R> {
-    /// Calculates the sum over the iterator using checked arithmetic. If an over or underflow would
-    /// happen it returns [`None`].
+    /// Calculates the sum over the iterator using checked arithmetic. If an
+    /// overflow happens it returns [`None`].
     fn checked_sum(self) -> Option<R>;
 }
 

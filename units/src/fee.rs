@@ -13,6 +13,7 @@
 
 use core::ops;
 
+use crate::amount::{NumOpResult, OptionExt};
 use crate::{Amount, FeeRate, Weight};
 
 impl Amount {
@@ -27,11 +28,12 @@ impl Amount {
     /// # Examples
     ///
     /// ```
-    /// # use bitcoin_units::{Amount, FeeRate, Weight};
-    /// let amount = Amount::from_sat(10);
+    /// # use bitcoin_units::{amount, Amount, FeeRate, Weight};
+    /// let amount = Amount::from_sat(10)?;
     /// let weight = Weight::from_wu(300);
     /// let fee_rate = amount.checked_div_by_weight_ceil(weight).expect("Division by weight failed");
     /// assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(34));
+    /// # Ok::<_, amount::OutOfRangeError>(())
     /// ```
     #[must_use]
     pub const fn checked_div_by_weight_ceil(self, weight: Weight) -> Option<FeeRate> {
@@ -144,13 +146,16 @@ impl FeeRate {
     /// ensuring that the transaction fee is enough instead of falling short if
     /// rounded down.
     ///
-    /// [`None`] is returned if an overflow occurred.
+    /// Returns [`None`] if overflow occurred.
     #[must_use]
     pub const fn checked_mul_by_weight(self, weight: Weight) -> Option<Amount> {
         // No `?` operator in const context.
         match self.to_sat_per_kwu().checked_mul(weight.to_wu()) {
             Some(mul_res) => match mul_res.checked_add(999) {
-                Some(add_res) => Some(Amount::from_sat(add_res / 1000)),
+                Some(add_res) => match Amount::from_sat(add_res / 1000) {
+                    Ok(fee) => Some(fee),
+                    Err(_) => None,
+                },
                 None => None,
             },
             None => None,
@@ -158,44 +163,36 @@ impl FeeRate {
     }
 }
 
-/// Computes the ceiling so that the fee computation is conservative.
-impl ops::Mul<FeeRate> for Weight {
-    type Output = Amount;
-
-    fn mul(self, rhs: FeeRate) -> Self::Output {
-        Amount::from_sat((rhs.to_sat_per_kwu() * self.to_wu() + 999) / 1000)
+crate::internal_macros::impl_op_for_references! {
+    impl ops::Mul<FeeRate> for Weight {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: FeeRate) -> Self::Output {
+            rhs.checked_mul_by_weight(self).valid_or_error()
+        }
     }
-}
 
-impl ops::Mul<Weight> for FeeRate {
-    type Output = Amount;
-
-    fn mul(self, rhs: Weight) -> Self::Output { rhs * self }
-}
-
-impl ops::Div<Weight> for Amount {
-    type Output = FeeRate;
-
-    /// Truncating integer division.
-    ///
-    /// This is likely the wrong thing for a user dividing an amount by a weight. Consider using
-    /// `checked_div_by_weight` instead.
-    fn div(self, rhs: Weight) -> Self::Output {
-        FeeRate::from_sat_per_kwu(self.to_sat() * 1000 / rhs.to_wu())
+    impl ops::Mul<Weight> for FeeRate {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: Weight) -> Self::Output {
+            self.checked_mul_by_weight(rhs).valid_or_error()
+        }
     }
-}
 
-impl ops::Div<FeeRate> for Amount {
-    type Output = Weight;
+    impl ops::Div<Weight> for Amount {
+        type Output = FeeRate;
 
-    /// Truncating integer division.
-    ///
-    /// # Panics
-    ///
-    /// This operation will panic if `fee_rate` is zero or the division results in overflow.
-    ///
-    /// Note: This uses floor division. For ceiling division use [`Amount::checked_div_by_fee_rate_ceil`].
-    fn div(self, rhs: FeeRate) -> Self::Output { self.checked_div_by_fee_rate_floor(rhs).unwrap() }
+        fn div(self, rhs: Weight) -> Self::Output {
+            FeeRate::from_sat_per_kwu(self.to_sat() * 1000 / rhs.to_wu())
+        }
+    }
+
+    impl ops::Div<FeeRate> for Amount {
+        type Output = Weight;
+
+        fn div(self, rhs: FeeRate) -> Self::Output {
+            self.checked_div_by_fee_rate_floor(rhs).unwrap()
+        }
+    }
 }
 
 impl Weight {
@@ -206,7 +203,7 @@ impl Weight {
     /// ensuring that the transaction fee is enough instead of falling short if
     /// rounded down.
     ///
-    /// [`None`] is returned if an overflow occurred.
+    /// Returns [`None`] if overflow occurred.
     #[must_use]
     pub const fn checked_mul_by_fee_rate(self, fee_rate: FeeRate) -> Option<Amount> {
         fee_rate.checked_mul_by_weight(self)
@@ -219,7 +216,7 @@ mod tests {
 
     #[test]
     fn fee_rate_div_by_weight() {
-        let fee_rate = Amount::from_sat_unchecked(329) / Weight::from_wu(381);
+        let fee_rate = Amount::from_sat_u32(329) / Weight::from_wu(381);
         assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(863));
     }
 
@@ -230,7 +227,7 @@ mod tests {
 
         let fee_rate = FeeRate::from_sat_per_vb(2).unwrap();
         let weight = Weight::from_vb(3).unwrap();
-        assert_eq!(fee_rate.to_fee(weight).unwrap(), Amount::from_sat_unchecked(6));
+        assert_eq!(fee_rate.to_fee(weight).unwrap(), Amount::from_sat_u32(6));
     }
 
     #[test]
@@ -240,7 +237,7 @@ mod tests {
             .unwrap()
             .checked_mul_by_weight(weight)
             .expect("expected Amount");
-        assert_eq!(Amount::from_sat_unchecked(100), fee);
+        assert_eq!(Amount::from_sat_u32(100), fee);
 
         let fee = FeeRate::from_sat_per_kwu(10).checked_mul_by_weight(Weight::MAX);
         assert!(fee.is_none());
@@ -248,14 +245,14 @@ mod tests {
         let weight = Weight::from_vb(3).unwrap();
         let fee_rate = FeeRate::from_sat_per_vb(3).unwrap();
         let fee = fee_rate.checked_mul_by_weight(weight).unwrap();
-        assert_eq!(Amount::from_sat_unchecked(9), fee);
+        assert_eq!(Amount::from_sat_u32(9), fee);
 
         let weight = Weight::from_wu(381);
         let fee_rate = FeeRate::from_sat_per_kwu(864);
         let fee = weight.checked_mul_by_fee_rate(fee_rate).unwrap();
         // 381 * 0.864 yields 329.18.
         // The result is then rounded up to 330.
-        assert_eq!(fee, Amount::from_sat_unchecked(330));
+        assert_eq!(fee, Amount::from_sat_u32(330));
     }
 
     #[test]
@@ -263,21 +260,35 @@ mod tests {
     fn multiply() {
         let two = FeeRate::from_sat_per_vb(2).unwrap();
         let three = Weight::from_vb(3).unwrap();
-        let six = Amount::from_sat_unchecked(6);
+        let six = Amount::from_sat_u32(6);
 
-        assert_eq!(two * three, six);
+        assert_eq!(two * three, six.into());
+
+        // Test reference operators
+        assert_eq!(&two * three, six.into());
+        assert_eq!(two * &three, six.into());
+        assert_eq!(&two * &three, six.into());
     }
 
     #[test]
+    #[allow(clippy::op_ref)]
     fn amount_div_by_fee_rate() {
         // Test exact division
-        let amount = Amount::from_sat_unchecked(1000);
+        let amount = Amount::from_sat_u32(1000);
         let fee_rate = FeeRate::from_sat_per_kwu(2);
         let weight = amount / fee_rate;
         assert_eq!(weight, Weight::from_wu(500_000));
 
+        // Test reference division
+        let weight_ref = &amount / fee_rate;
+        assert_eq!(weight_ref, Weight::from_wu(500_000));
+        let weight_ref2 = amount / &fee_rate;
+        assert_eq!(weight_ref2, Weight::from_wu(500_000));
+        let weight_ref3 = &amount / &fee_rate;
+        assert_eq!(weight_ref3, Weight::from_wu(500_000));
+
         // Test truncation behavior
-        let amount = Amount::from_sat_unchecked(1000);
+        let amount = Amount::from_sat_u32(1000);
         let fee_rate = FeeRate::from_sat_per_kwu(3);
         let weight = amount / fee_rate;
         // 1000 * 1000 = 1,000,000 msats

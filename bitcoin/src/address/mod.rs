@@ -49,6 +49,7 @@ use core::str::FromStr;
 use bech32::primitives::gf32::Fe32;
 use bech32::primitives::hrp::Hrp;
 use hashes::{hash160, HashEngine};
+use internals::array::ArrayExt;
 use secp256k1::{Secp256k1, Verification, XOnlyPublicKey};
 
 use crate::address::script_pubkey::ScriptBufExt as _;
@@ -91,6 +92,8 @@ pub enum AddressType {
     P2wsh,
     /// Pay to taproot.
     P2tr,
+    /// Pay to anchor.
+    P2a,
 }
 
 impl fmt::Display for AddressType {
@@ -101,6 +104,7 @@ impl fmt::Display for AddressType {
             AddressType::P2wpkh => "p2wpkh",
             AddressType::P2wsh => "p2wsh",
             AddressType::P2tr => "p2tr",
+            AddressType::P2a => "p2a",
         })
     }
 }
@@ -114,6 +118,7 @@ impl FromStr for AddressType {
             "p2wpkh" => Ok(AddressType::P2wpkh),
             "p2wsh" => Ok(AddressType::P2wsh),
             "p2tr" => Ok(AddressType::P2tr),
+            "p2a" => Ok(AddressType::P2a),
             _ => Err(UnknownAddressTypeError(s.to_owned())),
         }
     }
@@ -267,6 +272,16 @@ impl KnownHrp {
 
 impl From<Network> for KnownHrp {
     fn from(n: Network) -> Self { Self::from_network(n) }
+}
+
+impl From<KnownHrp> for NetworkKind {
+    fn from(hrp: KnownHrp) -> Self {
+        match hrp {
+            KnownHrp::Mainnet => NetworkKind::Main,
+            KnownHrp::Testnets => NetworkKind::Test,
+            KnownHrp::Regtest => NetworkKind::Test,
+        }
+    }
 }
 
 /// The data encoded by an `Address`.
@@ -446,6 +461,16 @@ impl<V: NetworkValidation> Address<V> {
 
     /// Marks the network of this address as unchecked.
     pub fn into_unchecked(self) -> Address<NetworkUnchecked> { Address(self.0, PhantomData) }
+
+    /// Returns the [`NetworkKind`] of this address.
+    pub fn network_kind(&self) -> NetworkKind {
+        use AddressInner::*;
+        match self.0 {
+            P2pkh { hash: _, ref network } => *network,
+            P2sh { hash: _, ref network } => *network,
+            Segwit { program: _, ref hrp } => NetworkKind::from(*hrp),
+        }
+    }
 }
 
 /// Methods and functions that can be called only on `Address<NetworkChecked>`.
@@ -572,6 +597,8 @@ impl Address {
                     Some(AddressType::P2wsh)
                 } else if program.is_p2tr() {
                     Some(AddressType::P2tr)
+                } else if program.is_p2a() {
+                    Some(AddressType::P2a)
                 } else {
                     None
                 },
@@ -876,12 +903,9 @@ impl Address<NetworkUnchecked> {
             return Err(LegacyAddressTooLongError { length: s.len() }.into());
         }
         let data = base58::decode_check(s)?;
-        if data.len() != 21 {
-            return Err(InvalidBase58PayloadLengthError { length: s.len() }.into());
-        }
+        let data: &[u8; 21] = (&*data).try_into().map_err(|_| InvalidBase58PayloadLengthError { length: s.len() })?;
 
-        let (prefix, data) = data.split_first().expect("length checked above");
-        let data: [u8; 20] = data.try_into().expect("length checked above");
+        let (prefix, &data) = data.split_first();
 
         let inner = match *prefix {
             PUBKEY_ADDRESS_PREFIX_MAIN => {
@@ -932,7 +956,7 @@ impl<V: NetworkValidation> fmt::Debug for Address<V> {
 /// Address can be parsed only with `NetworkUnchecked`.
 ///
 /// Only SegWit bech32 addresses prefixed with `bc`, `bcrt` or `tb` and legacy base58 addresses
-/// prefixed with `1`, `2, `3`, `m` or `n` are supported.
+/// prefixed with `1`, `2`, `3`, `m` or `n` are supported.
 ///
 /// # Errors
 ///
@@ -1061,10 +1085,8 @@ mod tests {
     #[test]
     fn p2sh_parse_for_large_script() {
         let script = ScriptBuf::from_hex("552103a765fc35b3f210b95223846b36ef62a4e53e34e2925270c2c7906b92c9f718eb2103c327511374246759ec8d0b89fa6c6b23b33e11f92c5bc155409d86de0c79180121038cae7406af1f12f4786d820a1466eec7bc5785a1b5e4a387eca6d797753ef6db2103252bfb9dcaab0cd00353f2ac328954d791270203d66c2be8b430f115f451b8a12103e79412d42372c55dd336f2eb6eb639ef9d74a22041ba79382c74da2338fe58ad21035049459a4ebc00e876a9eef02e72a3e70202d3d1f591fc0dd542f93f642021f82102016f682920d9723c61b27f562eb530c926c00106004798b6471e8c52c60ee02057ae12123122313123123ac1231231231231313123131231231231313212313213123123552103a765fc35b3f210b95223846b36ef62a4e53e34e2925270c2c7906b92c9f718eb2103c327511374246759ec8d0b89fa6c6b23b33e11f92c5bc155409d86de0c79180121038cae7406af1f12f4786d820a1466eec7bc5785a1b5e4a387eca6d797753ef6db2103252bfb9dcaab0cd00353f2ac328954d791270203d66c2be8b430f115f451b8a12103e79412d42372c55dd336f2eb6eb639ef9d74a22041ba79382c74da2338fe58ad21035049459a4ebc00e876a9eef02e72a3e70202d3d1f591fc0dd542f93f642021f82102016f682920d9723c61b27f562eb530c926c00106004798b6471e8c52c60ee02057ae12123122313123123ac1231231231231313123131231231231313212313213123123552103a765fc35b3f210b95223846b36ef62a4e53e34e2925270c2c7906b92c9f718eb2103c327511374246759ec8d0b89fa6c6b23b33e11f92c5bc155409d86de0c79180121038cae7406af1f12f4786d820a1466eec7bc5785a1b5e4a387eca6d797753ef6db2103252bfb9dcaab0cd00353f2ac328954d791270203d66c2be8b430f115f451b8a12103e79412d42372c55dd336f2eb6eb639ef9d74a22041ba79382c74da2338fe58ad21035049459a4ebc00e876a9eef02e72a3e70202d3d1f591fc0dd542f93f642021f82102016f682920d9723c61b27f562eb530c926c00106004798b6471e8c52c60ee02057ae12123122313123123ac1231231231231313123131231231231313212313213123123").unwrap();
-        assert_eq!(
-            Address::p2sh(&script, NetworkKind::Test),
-            Err(RedeemScriptSizeError { size: script.len() })
-        );
+        let res = Address::p2sh(&script, NetworkKind::Test);
+        assert_eq!(res.unwrap_err().invalid_size(), script.len())
     }
 
     #[test]
@@ -1525,5 +1547,23 @@ mod tests {
             serde_json::from_str(&ser).expect("failed to deserialize");
         assert_eq!(&rinsed.address, foo_checked.address.as_unchecked());
         assert_eq!(rinsed, foo_unchecked);
+    }
+
+    #[test]
+    fn pay_to_anchor_address_regtest() {
+        // Verify that p2a uses the expected address for regtest.
+        // This test-vector is borrowed from the bitcoin source code.
+        let address_str = "bcrt1pfeesnyr2tx";
+
+        let script = ScriptBuf::new_p2a();
+        let address_unchecked = address_str.parse().unwrap();
+        let address = Address::from_script(&script, Network::Regtest).unwrap();
+        assert_eq!(address.as_unchecked(), &address_unchecked);
+        assert_eq!(address.to_string(), address_str);
+
+        // Verify that the address is considered standard
+        // and that the output type is P2a
+        assert!(address.is_spend_standard());
+        assert_eq!(address.address_type(), Some(AddressType::P2a));
     }
 }

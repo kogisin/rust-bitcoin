@@ -135,6 +135,7 @@ impl Psbt {
     /// An alias for [`extract_tx_fee_rate_limit`].
     ///
     /// [`extract_tx_fee_rate_limit`]: Psbt::extract_tx_fee_rate_limit
+    #[allow(clippy::result_large_err)] // The PSBT returned in `SendingToomuch` is large.
     pub fn extract_tx(self) -> Result<Transaction, ExtractTxError> {
         self.internal_extract_tx_with_fee_rate_limit(Self::DEFAULT_MAX_FEE_RATE)
     }
@@ -146,6 +147,7 @@ impl Psbt {
     /// [`ExtractTxError`] variants will contain either the [`Psbt`] itself or the [`Transaction`]
     /// that was extracted. These can be extracted from the Errors in order to recover.
     /// See the error documentation for info on the variants. In general, it covers large fees.
+    #[allow(clippy::result_large_err)] // The PSBT returned in `SendingToomuch` is large.
     pub fn extract_tx_fee_rate_limit(self) -> Result<Transaction, ExtractTxError> {
         self.internal_extract_tx_with_fee_rate_limit(Self::DEFAULT_MAX_FEE_RATE)
     }
@@ -157,6 +159,7 @@ impl Psbt {
     /// See [`extract_tx`].
     ///
     /// [`extract_tx`]: Psbt::extract_tx
+    #[allow(clippy::result_large_err)] // The PSBT returned in `SendingToomuch` is large.
     pub fn extract_tx_with_fee_rate_limit(
         self,
         max_fee_rate: FeeRate,
@@ -184,6 +187,7 @@ impl Psbt {
     }
 
     #[inline]
+    #[allow(clippy::result_large_err)] // The PSBT returned in `SendingToomuch` is large.
     fn internal_extract_tx_with_fee_rate_limit(
         self,
         max_fee_rate: FeeRate,
@@ -445,9 +449,9 @@ impl Psbt {
                         .to_inner();
 
                     #[cfg(feature = "rand-std")]
-                    let signature = secp.sign_schnorr(&msg, &key_pair);
+                    let signature = secp.sign_schnorr(msg.as_ref(), &key_pair);
                     #[cfg(not(feature = "rand-std"))]
-                    let signature = secp.sign_schnorr_no_aux_rand(&msg, &key_pair);
+                    let signature = secp.sign_schnorr_no_aux_rand(msg.as_ref(), &key_pair);
 
                     let signature = taproot::Signature { signature, sighash_type };
                     input.tap_key_sig = Some(signature);
@@ -472,9 +476,9 @@ impl Psbt {
                             self.sighash_taproot(input_index, cache, Some(lh))?;
 
                         #[cfg(feature = "rand-std")]
-                        let signature = secp.sign_schnorr(&msg, &key_pair);
+                        let signature = secp.sign_schnorr(msg.as_ref(), &key_pair);
                         #[cfg(not(feature = "rand-std"))]
-                        let signature = secp.sign_schnorr_no_aux_rand(&msg, &key_pair);
+                        let signature = secp.sign_schnorr_no_aux_rand(msg.as_ref(), &key_pair);
 
                         let signature = taproot::Signature { signature, sighash_type };
                         input.tap_script_sigs.insert((xonly, lh), signature);
@@ -1264,7 +1268,7 @@ mod tests {
                     witness: Witness::default(),
                 }],
                 output: vec![TxOut {
-                    value: Amount::from_sat(output),
+                    value: Amount::from_sat(output).unwrap(),
                     script_pubkey: ScriptBuf::from_hex(
                         "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787",
                     )
@@ -1278,7 +1282,7 @@ mod tests {
 
             inputs: vec![Input {
                 witness_utxo: Some(TxOut {
-                    value: Amount::from_sat(input),
+                    value: Amount::from_sat(input).unwrap(),
                     script_pubkey: ScriptBuf::from_hex(
                         "a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587",
                     )
@@ -1425,14 +1429,14 @@ mod tests {
                 }],
                 output: vec![
                     TxOut {
-                        value: Amount::from_sat_unchecked(99_999_699),
+                        value: Amount::from_sat_u32(99_999_699),
                         script_pubkey: ScriptBuf::from_hex(
                             "76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac",
                         )
                         .unwrap(),
                     },
                     TxOut {
-                        value: Amount::from_sat_unchecked(100_000_000),
+                        value: Amount::from_sat_u32(100_000_000),
                         script_pubkey: ScriptBuf::from_hex(
                             "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787",
                         )
@@ -1498,7 +1502,7 @@ mod tests {
                 )]),
             }],
             output: vec![TxOut {
-                value: Amount::from_sat_unchecked(190_303_501_938),
+                value: Amount::from_sat(190_303_501_938).unwrap(),
                 script_pubkey: ScriptBuf::from_hex(
                     "a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587",
                 )
@@ -1549,7 +1553,7 @@ mod tests {
                 Input {
                     non_witness_utxo: Some(tx),
                     witness_utxo: Some(TxOut {
-                        value: Amount::from_sat_unchecked(190_303_501_938),
+                        value: Amount::from_sat(190_303_501_938).unwrap(),
                         script_pubkey: ScriptBuf::from_hex("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
                     }),
                     sighash_type: Some("SIGHASH_SINGLE|SIGHASH_ANYONECANPAY".parse::<PsbtSighashType>().unwrap()),
@@ -1674,11 +1678,11 @@ mod tests {
                     ],
                     output: vec![
                         TxOut {
-                            value: Amount::from_sat_unchecked(99_999_699),
+                            value: Amount::from_sat_u32(99_999_699),
                             script_pubkey: ScriptBuf::from_hex("76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac").unwrap(),
                         },
                         TxOut {
-                            value: Amount::from_sat_unchecked(100_000_000),
+                            value: Amount::from_sat_u32(100_000_000),
                             script_pubkey: ScriptBuf::from_hex("a9143545e6e33b832c47050f24d3eeb93c9c03948bc787").unwrap(),
                         },
                     ],
@@ -1721,11 +1725,11 @@ mod tests {
                             ],
                             output: vec![
                                 TxOut {
-                                    value: Amount::from_sat_unchecked(200_000_000),
+                                    value: Amount::from_sat_u32(200_000_000),
                                     script_pubkey: ScriptBuf::from_hex("76a91485cff1097fd9e008bb34af709c62197b38978a4888ac").unwrap(),
                                 },
                                 TxOut {
-                                    value: Amount::from_sat_unchecked(190_303_501_938),
+                                    value: Amount::from_sat(190_303_501_938).unwrap(),
                                     script_pubkey: ScriptBuf::from_hex("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
                                 },
                             ],
@@ -2007,11 +2011,11 @@ mod tests {
                 ],
                 output: vec![
                     TxOut {
-                        value: Amount::from_sat_unchecked(99_999_699),
+                        value: Amount::from_sat_u32(99_999_699),
                         script_pubkey: ScriptBuf::from_hex("76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac").unwrap(),
                     },
                     TxOut {
-                        value: Amount::from_sat_unchecked(100_000_000),
+                        value: Amount::from_sat_u32(100_000_000),
                         script_pubkey: ScriptBuf::from_hex("a9143545e6e33b832c47050f24d3eeb93c9c03948bc787").unwrap(),
                     },
                 ],
@@ -2054,11 +2058,11 @@ mod tests {
                         ],
                         output: vec![
                             TxOut {
-                                value: Amount::from_sat_unchecked(200_000_000),
+                                value: Amount::from_sat_u32(200_000_000),
                                 script_pubkey: ScriptBuf::from_hex("76a91485cff1097fd9e008bb34af709c62197b38978a4888ac").unwrap(),
                             },
                             TxOut {
-                                value: Amount::from_sat_unchecked(190_303_501_938),
+                                value: Amount::from_sat(190_303_501_938).unwrap(),
                                 script_pubkey: ScriptBuf::from_hex("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
                             },
                         ],
@@ -2167,9 +2171,9 @@ mod tests {
 
     #[test]
     fn fee() {
-        let output_0_val = Amount::from_sat_unchecked(99_999_699);
-        let output_1_val = Amount::from_sat_unchecked(100_000_000);
-        let prev_output_val = Amount::from_sat_unchecked(200_000_000);
+        let output_0_val = Amount::from_sat_u32(99_999_699);
+        let output_1_val = Amount::from_sat_u32(100_000_000);
+        let prev_output_val = Amount::from_sat_u32(200_000_000);
 
         let t = Psbt {
             unsigned_tx: Transaction {
@@ -2230,7 +2234,7 @@ mod tests {
                                 script_pubkey:  ScriptBuf::new()
                             },
                             TxOut {
-                                value: Amount::from_sat_unchecked(190_303_501_938),
+                                value: Amount::from_sat(190_303_501_938).unwrap(),
                                 script_pubkey:  ScriptBuf::new()
                             },
                         ],
@@ -2279,7 +2283,7 @@ mod tests {
             version: transaction::Version::TWO,
             lock_time: absolute::LockTime::ZERO,
             input: vec![TxIn::EMPTY_COINBASE, TxIn::EMPTY_COINBASE],
-            output: vec![TxOut { value: Amount::from_sat(0), script_pubkey: ScriptBuf::new() }],
+            output: vec![TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new() }],
         };
         let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).unwrap();
 
@@ -2292,7 +2296,7 @@ mod tests {
 
         // First input we can spend. See comment above on key_map for why we use defaults here.
         let txout_wpkh = TxOut {
-            value: Amount::from_sat_unchecked(10),
+            value: Amount::from_sat_u32(10),
             script_pubkey: ScriptBuf::new_p2wpkh(pk.wpubkey_hash().unwrap()),
         };
         psbt.inputs[0].witness_utxo = Some(txout_wpkh);
@@ -2304,7 +2308,7 @@ mod tests {
         // Second input is unspendable by us e.g., from another wallet that supports future upgrades.
         let unknown_prog = WitnessProgram::new(WitnessVersion::V4, &[0xaa; 34]).unwrap();
         let txout_unknown_future = TxOut {
-            value: Amount::from_sat_unchecked(10),
+            value: Amount::from_sat_u32(10),
             script_pubkey: ScriptBuf::new_witness_program(&unknown_prog),
         };
         psbt.inputs[1].witness_utxo = Some(txout_unknown_future);

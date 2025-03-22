@@ -10,7 +10,7 @@ use core::{convert, fmt, mem};
 use std::error;
 
 use hashes::{sha256, siphash24};
-use internals::ToU64 as _;
+use internals::{ToU64 as _, array::ArrayExt as _};
 use io::{BufRead, Write};
 
 use crate::consensus::encode::{self, Decodable, Encodable, ReadExt, WriteExt};
@@ -117,8 +117,8 @@ impl ShortId {
         // 2. Running SipHash-2-4 with the input being the transaction ID and the keys (k0/k1)
         // set to the first two little-endian 64-bit integers from the above hash, respectively.
         (
-            u64::from_le_bytes(h.as_byte_array()[0..8].try_into().expect("8 byte slice")),
-            u64::from_le_bytes(h.as_byte_array()[8..16].try_into().expect("8 byte slice")),
+            u64::from_le_bytes(*h.as_byte_array().sub_array::<0, 8>()),
+            u64::from_le_bytes(*h.as_byte_array().sub_array::<8, 8>()),
         )
     }
 
@@ -413,8 +413,8 @@ mod test {
     use crate::merkle_tree::TxMerkleNode;
     use crate::transaction::OutPointExt;
     use crate::{
-        transaction, Amount, BlockChecked, CompactTarget, OutPoint, ScriptBuf, Sequence, TxIn,
-        TxOut, Txid, Witness,
+        transaction, Amount, BlockChecked, BlockTime, CompactTarget, OutPoint, ScriptBuf, Sequence,
+        TxIn, TxOut, Txid, Witness,
     };
 
     fn dummy_tx(nonce: &[u8]) -> Transaction {
@@ -437,7 +437,7 @@ mod test {
             version: block::Version::ONE,
             prev_blockhash: BlockHash::from_byte_array([0x99; 32]),
             merkle_root: TxMerkleNode::from_byte_array([0x77; 32]),
-            time: 2,
+            time: BlockTime::from_u32(2),
             bits: CompactTarget::from_consensus(3),
             nonce: 4,
         };

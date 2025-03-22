@@ -9,8 +9,36 @@ use core::marker::PhantomData;
 use crate::sha256::Midstate;
 use crate::{sha256, HashEngine as _};
 
+/// Hashes some bytes.
+pub fn hash<T>(data: &[u8]) -> Hash<T>
+where
+    T: Tag,
+{
+    use crate::HashEngine as _;
+
+    let mut engine = HashEngine::default();
+    engine.input(data);
+    engine.finalize()
+}
+
+/// Hashes all the byte slices retrieved from the iterator together.
+pub fn hash_byte_chunks<B, I, T>(byte_slices: I) -> Hash<T>
+where
+    B: AsRef<[u8]>,
+    I: IntoIterator<Item = B>,
+    T: Tag,
+{
+    use crate::HashEngine as _;
+
+    let mut engine = HashEngine::default();
+    for slice in byte_slices {
+        engine.input(slice.as_ref());
+    }
+    engine.finalize()
+}
+
 /// Trait representing a tag that can be used as a context for SHA256t hashes.
-pub trait Tag: Clone {
+pub trait Tag {
     /// The [`Midstate`] after pre-tagging the hash engine.
     const MIDSTATE: sha256::Midstate;
 }
@@ -118,7 +146,7 @@ impl<T: Tag> core::hash::Hash for Hash<T> {
 crate::internal_macros::hash_trait_impls!(256, false, T: Tag);
 
 /// Engine to compute SHA256t hash function.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HashEngine<T>(sha256::HashEngine, PhantomData<T>);
 
 impl<T: Tag> Default for HashEngine<T> {
@@ -128,10 +156,18 @@ impl<T: Tag> Default for HashEngine<T> {
     }
 }
 
+impl<T: Tag> Clone for HashEngine<T> {
+    fn clone(&self) -> Self { Self(self.0.clone(), PhantomData) }
+}
+
 impl<T: Tag> crate::HashEngine for HashEngine<T> {
+    type Hash = Hash<T>;
+    type Bytes = [u8; 32];
     const BLOCK_SIZE: usize = 64; // Same as sha256::HashEngine::BLOCK_SIZE;
+
     fn input(&mut self, data: &[u8]) { self.0.input(data) }
     fn n_bytes_hashed(&self) -> u64 { self.0.n_bytes_hashed() }
+    fn finalize(self) -> Self::Hash { Hash::from_engine(self) }
 }
 
 crate::internal_macros::impl_write!(

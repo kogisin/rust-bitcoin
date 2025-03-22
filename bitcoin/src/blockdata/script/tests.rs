@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 use hex_lit::hex;
-use primitives::opcodes;
 
 use super::*;
 use crate::address::script_pubkey::{
@@ -9,7 +8,7 @@ use crate::address::script_pubkey::{
 };
 use crate::consensus::encode::{deserialize, serialize};
 use crate::crypto::key::{PublicKey, XOnlyPublicKey};
-use crate::{Amount, FeeRate};
+use crate::{opcodes, Amount, FeeRate};
 
 #[test]
 #[rustfmt::skip]
@@ -495,7 +494,7 @@ fn script_asm() {
     assert_eq!(ScriptBuf::from_hex("0047304402202457e78cc1b7f50d0543863c27de75d07982bde8359b9e3316adec0aec165f2f02200203fd331c4e4a4a02f48cf1c291e2c0d6b2f7078a784b5b3649fca41f8794d401004cf1552103244e602b46755f24327142a0517288cebd159eccb6ccf41ea6edf1f601e9af952103bbbacc302d19d29dbfa62d23f37944ae19853cf260c745c2bea739c95328fcb721039227e83246bd51140fe93538b2301c9048be82ef2fb3c7fc5d78426ed6f609ad210229bf310c379b90033e2ecb07f77ecf9b8d59acb623ab7be25a0caed539e2e6472103703e2ed676936f10b3ce9149fa2d4a32060fb86fa9a70a4efe3f21d7ab90611921031e9b7c6022400a6bb0424bbcde14cff6c016b91ee3803926f3440abf5c146d05210334667f975f55a8455d515a2ef1c94fdfa3315f12319a14515d2a13d82831f62f57ae").unwrap().to_string(),
                "OP_0 OP_PUSHBYTES_71 304402202457e78cc1b7f50d0543863c27de75d07982bde8359b9e3316adec0aec165f2f02200203fd331c4e4a4a02f48cf1c291e2c0d6b2f7078a784b5b3649fca41f8794d401 OP_0 OP_PUSHDATA1 552103244e602b46755f24327142a0517288cebd159eccb6ccf41ea6edf1f601e9af952103bbbacc302d19d29dbfa62d23f37944ae19853cf260c745c2bea739c95328fcb721039227e83246bd51140fe93538b2301c9048be82ef2fb3c7fc5d78426ed6f609ad210229bf310c379b90033e2ecb07f77ecf9b8d59acb623ab7be25a0caed539e2e6472103703e2ed676936f10b3ce9149fa2d4a32060fb86fa9a70a4efe3f21d7ab90611921031e9b7c6022400a6bb0424bbcde14cff6c016b91ee3803926f3440abf5c146d05210334667f975f55a8455d515a2ef1c94fdfa3315f12319a14515d2a13d82831f62f57ae");
     // Various weird scripts found in transaction 6d7ed9914625c73c0288694a6819196a27ef6c08f98e1270d975a8e65a3dc09a
-    // which triggerred overflow bugs on 32-bit machines in script formatting in the past.
+    // which triggered overflow bugs on 32-bit machines in script formatting in the past.
     assert_eq!(ScriptBuf::from_hex("01").unwrap().to_string(), "OP_PUSHBYTES_1 <push past end>");
     assert_eq!(ScriptBuf::from_hex("0201").unwrap().to_string(), "OP_PUSHBYTES_2 <push past end>");
     assert_eq!(ScriptBuf::from_hex("4c").unwrap().to_string(), "<unexpected end>");
@@ -676,7 +675,7 @@ fn bitcoinconsensus() {
     let spent_bytes = hex!("0020701a8d401c84fb13e6baf169d59684e17abd9fa216c8cc5b9fc63d622ff8c58d");
     let spent = Script::from_bytes(&spent_bytes);
     let spending = hex!("010000000001011f97548fbbe7a0db7588a66e18d803d0089315aa7d4cc28360b6ec50ef36718a0100000000ffffffff02df1776000000000017a9146c002a686959067f4866b8fb493ad7970290ab728757d29f0000000000220020701a8d401c84fb13e6baf169d59684e17abd9fa216c8cc5b9fc63d622ff8c58d04004730440220565d170eed95ff95027a69b313758450ba84a01224e1f7f130dda46e94d13f8602207bdd20e307f062594022f12ed5017bbf4a055a06aea91c10110a0e3bb23117fc014730440220647d2dc5b15f60bc37dc42618a370b2a1490293f9e5c8464f53ec4fe1dfe067302203598773895b4b16d37485cbe21b337f4e4b650739880098c592553add7dd4355016952210375e00eb72e29da82b89367947f29ef34afb75e8654f6ea368e0acdfd92976b7c2103a1b26313f430c4b15bb1fdce663207659d8cac749a0e53d70eff01874496feff2103c96d495bfdd5ba4145e3e046fee45e84a8a48ad05bd8dbb395c011a32cf9f88053ae00000000");
-    spent.verify(0, Amount::from_sat_unchecked(18393430), &spending).unwrap();
+    spent.verify(0, Amount::from_sat_u32(18393430), &spending).unwrap();
 }
 
 #[test]
@@ -685,10 +684,10 @@ fn default_dust_value() {
     // well-known scriptPubKey types.
     let script_p2wpkh = Builder::new().push_int_unchecked(0).push_slice([42; 20]).into_script();
     assert!(script_p2wpkh.is_p2wpkh());
-    assert_eq!(script_p2wpkh.minimal_non_dust(), Amount::from_sat_unchecked(294));
+    assert_eq!(script_p2wpkh.minimal_non_dust(), Some(Amount::from_sat_u32(294)));
     assert_eq!(
         script_p2wpkh.minimal_non_dust_custom(FeeRate::from_sat_per_vb_unchecked(6)),
-        Amount::from_sat_unchecked(588)
+        Some(Amount::from_sat_u32(588))
     );
 
     let script_p2pkh = Builder::new()
@@ -699,10 +698,10 @@ fn default_dust_value() {
         .push_opcode(OP_CHECKSIG)
         .into_script();
     assert!(script_p2pkh.is_p2pkh());
-    assert_eq!(script_p2pkh.minimal_non_dust(), Amount::from_sat_unchecked(546));
+    assert_eq!(script_p2pkh.minimal_non_dust(), Some(Amount::from_sat_u32(546)));
     assert_eq!(
         script_p2pkh.minimal_non_dust_custom(FeeRate::from_sat_per_vb_unchecked(6)),
-        Amount::from_sat_unchecked(1092)
+        Some(Amount::from_sat_u32(1092))
     );
 }
 
