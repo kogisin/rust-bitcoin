@@ -13,14 +13,15 @@
 
 use core::ops;
 
-use crate::amount::{NumOpResult, OptionExt};
-use crate::{Amount, FeeRate, Weight};
+use NumOpResult as R;
+
+use crate::{Amount, FeeRate, MathOp, NumOpResult, OptionExt, Weight};
 
 impl Amount {
     /// Checked weight ceiling division.
     ///
     /// Be aware that integer division loses the remainder if no exact division
-    /// can be made. This method rounds up ensuring the transaction fee-rate is
+    /// can be made. This method rounds up ensuring the transaction fee rate is
     /// sufficient. See also [`Self::checked_div_by_weight_floor`].
     ///
     /// Returns [`None`] if overflow occurred.
@@ -31,8 +32,8 @@ impl Amount {
     /// # use bitcoin_units::{amount, Amount, FeeRate, Weight};
     /// let amount = Amount::from_sat(10)?;
     /// let weight = Weight::from_wu(300);
-    /// let fee_rate = amount.checked_div_by_weight_ceil(weight).expect("Division by weight failed");
-    /// assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(34));
+    /// let fee_rate = amount.checked_div_by_weight_ceil(weight);
+    /// assert_eq!(fee_rate, Some(FeeRate::from_sat_per_kwu(34)));
     /// # Ok::<_, amount::OutOfRangeError>(())
     /// ```
     #[must_use]
@@ -141,10 +142,9 @@ impl FeeRate {
 
     /// Checked weight multiplication.
     ///
-    /// Computes the absolute fee amount for a given [`Weight`] at this fee rate.
-    /// When the resulting fee is a non-integer amount, the amount is rounded up,
-    /// ensuring that the transaction fee is enough instead of falling short if
-    /// rounded down.
+    /// Computes the absolute fee amount for a given [`Weight`] at this fee rate. When the resulting
+    /// fee is a non-integer amount, the amount is rounded up, ensuring that the transaction fee is
+    /// enough instead of falling short if rounded down.
     ///
     /// Returns [`None`] if overflow occurred.
     #[must_use]
@@ -167,30 +167,156 @@ crate::internal_macros::impl_op_for_references! {
     impl ops::Mul<FeeRate> for Weight {
         type Output = NumOpResult<Amount>;
         fn mul(self, rhs: FeeRate) -> Self::Output {
-            rhs.checked_mul_by_weight(self).valid_or_error()
+            rhs.checked_mul_by_weight(self).valid_or_error(MathOp::Mul)
+        }
+    }
+    impl ops::Mul<FeeRate> for NumOpResult<Weight> {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: FeeRate) -> Self::Output {
+            match self {
+                R::Valid(lhs) => lhs * rhs,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Mul<NumOpResult<FeeRate>> for Weight {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: NumOpResult<FeeRate>) -> Self::Output {
+            match rhs {
+                R::Valid(fee_rate) => self * fee_rate,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Mul<NumOpResult<FeeRate>> for NumOpResult<Weight> {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: NumOpResult<FeeRate>) -> Self::Output {
+            match self {
+                R::Valid(lhs) => { match rhs {
+                    R::Valid(fee_rate) => lhs * fee_rate,
+                    R::Error(e) => NumOpResult::Error(e),
+                }}
+                R::Error(e) => NumOpResult::Error(e),
+            }
         }
     }
 
     impl ops::Mul<Weight> for FeeRate {
         type Output = NumOpResult<Amount>;
         fn mul(self, rhs: Weight) -> Self::Output {
-            self.checked_mul_by_weight(rhs).valid_or_error()
+            self.checked_mul_by_weight(rhs).valid_or_error(MathOp::Mul)
+        }
+    }
+    impl ops::Mul<Weight> for NumOpResult<FeeRate> {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: Weight) -> Self::Output {
+            match self {
+                R::Valid(lhs) => lhs * rhs,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Mul<NumOpResult<Weight>> for FeeRate {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: NumOpResult<Weight>) -> Self::Output {
+            match rhs {
+                R::Valid(weight) => self * weight,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Mul<NumOpResult<Weight>> for NumOpResult<FeeRate> {
+        type Output = NumOpResult<Amount>;
+        fn mul(self, rhs: NumOpResult<Weight>) -> Self::Output {
+            match self {
+                R::Valid(lhs) => { match rhs {
+                    R::Valid(weight) => lhs * weight,
+                    R::Error(e) => NumOpResult::Error(e),
+                }}
+                R::Error(e) => NumOpResult::Error(e),
+            }
         }
     }
 
     impl ops::Div<Weight> for Amount {
-        type Output = FeeRate;
+        type Output = NumOpResult<FeeRate>;
 
         fn div(self, rhs: Weight) -> Self::Output {
-            FeeRate::from_sat_per_kwu(self.to_sat() * 1000 / rhs.to_wu())
+            self.checked_div_by_weight_floor(rhs).valid_or_error(MathOp::Div)
+        }
+    }
+    impl ops::Div<Weight> for NumOpResult<Amount> {
+        type Output = NumOpResult<FeeRate>;
+
+        fn div(self, rhs: Weight) -> Self::Output {
+            match self {
+                R::Valid(lhs) => lhs / rhs,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Div<NumOpResult<Weight>> for Amount {
+        type Output = NumOpResult<FeeRate>;
+
+        fn div(self, rhs: NumOpResult<Weight>) -> Self::Output {
+            match rhs {
+                R::Valid(weight) => self / weight,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Div<NumOpResult<Weight>> for NumOpResult<Amount> {
+        type Output = NumOpResult<FeeRate>;
+
+        fn div(self, rhs: NumOpResult<Weight>) -> Self::Output {
+            match self {
+                R::Valid(lhs) => { match rhs {
+                    R::Valid(weight) => lhs / weight,
+                    R::Error(e) => NumOpResult::Error(e),
+                }}
+                R::Error(e) => NumOpResult::Error(e),
+            }
         }
     }
 
     impl ops::Div<FeeRate> for Amount {
-        type Output = Weight;
+        type Output = NumOpResult<Weight>;
 
         fn div(self, rhs: FeeRate) -> Self::Output {
-            self.checked_div_by_fee_rate_floor(rhs).unwrap()
+            self.checked_div_by_fee_rate_floor(rhs).valid_or_error(MathOp::Div)
+        }
+    }
+    impl ops::Div<FeeRate> for NumOpResult<Amount> {
+        type Output = NumOpResult<Weight>;
+
+        fn div(self, rhs: FeeRate) -> Self::Output {
+            match self {
+                R::Valid(lhs) => lhs / rhs,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Div<NumOpResult<FeeRate>> for Amount {
+        type Output = NumOpResult<Weight>;
+
+        fn div(self, rhs: NumOpResult<FeeRate>) -> Self::Output {
+            match rhs {
+                R::Valid(fee_rate) => self / fee_rate,
+                R::Error(e) => NumOpResult::Error(e),
+            }
+        }
+    }
+    impl ops::Div<NumOpResult<FeeRate>> for NumOpResult<Amount> {
+        type Output = NumOpResult<Weight>;
+
+        fn div(self, rhs: NumOpResult<FeeRate>) -> Self::Output {
+            match self {
+                R::Valid(lhs) => { match rhs {
+                    R::Valid(fee_rate) => lhs / fee_rate,
+                    R::Error(e) => NumOpResult::Error(e),
+                }}
+                R::Error(e) => NumOpResult::Error(e),
+            }
         }
     }
 }
@@ -198,10 +324,9 @@ crate::internal_macros::impl_op_for_references! {
 impl Weight {
     /// Checked fee rate multiplication.
     ///
-    /// Computes the absolute fee amount for a given [`FeeRate`] at this weight.
-    /// When the resulting fee is a non-integer amount, the amount is rounded up,
-    /// ensuring that the transaction fee is enough instead of falling short if
-    /// rounded down.
+    /// Computes the absolute fee amount for a given [`FeeRate`] at this weight. When the resulting
+    /// fee is a non-integer amount, the amount is rounded up, ensuring that the transaction fee is
+    /// enough instead of falling short if rounded down.
     ///
     /// Returns [`None`] if overflow occurred.
     #[must_use]
@@ -216,7 +341,7 @@ mod tests {
 
     #[test]
     fn fee_rate_div_by_weight() {
-        let fee_rate = Amount::from_sat_u32(329) / Weight::from_wu(381);
+        let fee_rate = (Amount::from_sat_u32(329) / Weight::from_wu(381)).unwrap();
         assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(863));
     }
 
@@ -276,21 +401,21 @@ mod tests {
         // Test exact division
         let amount = Amount::from_sat_u32(1000);
         let fee_rate = FeeRate::from_sat_per_kwu(2);
-        let weight = amount / fee_rate;
+        let weight = (amount / fee_rate).unwrap();
         assert_eq!(weight, Weight::from_wu(500_000));
 
         // Test reference division
-        let weight_ref = &amount / fee_rate;
+        let weight_ref = (&amount / fee_rate).unwrap();
         assert_eq!(weight_ref, Weight::from_wu(500_000));
-        let weight_ref2 = amount / &fee_rate;
+        let weight_ref2 = (amount / &fee_rate).unwrap();
         assert_eq!(weight_ref2, Weight::from_wu(500_000));
-        let weight_ref3 = &amount / &fee_rate;
+        let weight_ref3 = (&amount / &fee_rate).unwrap();
         assert_eq!(weight_ref3, Weight::from_wu(500_000));
 
         // Test truncation behavior
         let amount = Amount::from_sat_u32(1000);
         let fee_rate = FeeRate::from_sat_per_kwu(3);
-        let weight = amount / fee_rate;
+        let weight = (amount / fee_rate).unwrap();
         // 1000 * 1000 = 1,000,000 msats
         // 1,000,000 / 3 = 333,333.33... wu
         // Should truncate down to 333,333 wu

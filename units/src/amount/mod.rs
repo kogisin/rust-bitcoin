@@ -35,11 +35,9 @@ pub use self::{
         OutOfRangeError, ParseAmountError, ParseDenominationError, ParseError,
         PossiblyConfusingDenominationError, TooPreciseError, UnknownDenominationError,
     },
-    result::{NumOpError, NumOpResult},
     signed::SignedAmount,
     unsigned::Amount,
 };
-pub(crate) use self::result::OptionExt;
 
 /// A set of denominations in which amounts can be expressed.
 ///
@@ -606,11 +604,7 @@ impl<T> CheckedSum<Amount> for T
 where
     T: Iterator<Item = Amount>,
 {
-    fn checked_sum(mut self) -> Option<Amount> {
-        let first = Some(self.next().unwrap_or_default());
-
-        self.fold(first, |acc, item| acc.and_then(|acc| acc.checked_add(item)))
-    }
+    fn checked_sum(mut self) -> Option<Amount> { self.try_fold(Amount::ZERO, Amount::checked_add) }
 }
 
 impl<T> CheckedSum<SignedAmount> for T
@@ -618,9 +612,7 @@ where
     T: Iterator<Item = SignedAmount>,
 {
     fn checked_sum(mut self) -> Option<SignedAmount> {
-        let first = Some(self.next().unwrap_or_default());
-
-        self.fold(first, |acc, item| acc.and_then(|acc| acc.checked_add(item)))
+        self.try_fold(SignedAmount::ZERO, SignedAmount::checked_add)
     }
 }
 

@@ -65,7 +65,7 @@ fn p2pk_pubkey_bytes_no_checksig_returns_none() {
 }
 
 #[test]
-fn p2pk_pubkey_bytes_emptry_script_returns_none() {
+fn p2pk_pubkey_bytes_empty_script_returns_none() {
     let empty_script = Script::builder().into_script();
     assert!(empty_script.p2pk_pubkey_bytes().is_none());
 }
@@ -556,11 +556,11 @@ fn p2sh_p2wsh_conversion() {
     // Test vectors taken from Core tests/data/script_tests.json
     // bare p2wsh
     let witness_script = ScriptBuf::from_hex("410479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8ac").unwrap();
-    let expected_witout =
+    let expected_without =
         ScriptBuf::from_hex("0020b95237b48faaa69eb078e1170be3b5cbb3fddf16d0a991e14ad274f7b33a4f64")
             .unwrap();
     assert!(witness_script.to_p2wsh().unwrap().is_p2wsh());
-    assert_eq!(witness_script.to_p2wsh().unwrap(), expected_witout);
+    assert_eq!(witness_script.to_p2wsh().unwrap(), expected_without);
 
     // p2sh
     let redeem_script = ScriptBuf::from_hex("0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8").unwrap();
@@ -571,13 +571,13 @@ fn p2sh_p2wsh_conversion() {
 
     // p2sh-p2wsh
     let witness_script = ScriptBuf::from_hex("410479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8ac").unwrap();
-    let expected_witout =
+    let expected_without =
         ScriptBuf::from_hex("0020b95237b48faaa69eb078e1170be3b5cbb3fddf16d0a991e14ad274f7b33a4f64")
             .unwrap();
     let expected_out =
         ScriptBuf::from_hex("a914f386c2ba255cc56d20cfa6ea8b062f8b5994551887").unwrap();
     assert!(witness_script.to_p2sh().unwrap().is_p2sh());
-    assert_eq!(witness_script.to_p2wsh().unwrap(), expected_witout);
+    assert_eq!(witness_script.to_p2wsh().unwrap(), expected_without);
     assert_eq!(witness_script.to_p2wsh().unwrap().to_p2sh().unwrap(), expected_out);
 }
 
@@ -684,7 +684,7 @@ fn default_dust_value() {
     // well-known scriptPubKey types.
     let script_p2wpkh = Builder::new().push_int_unchecked(0).push_slice([42; 20]).into_script();
     assert!(script_p2wpkh.is_p2wpkh());
-    assert_eq!(script_p2wpkh.minimal_non_dust(), Some(Amount::from_sat_u32(294)));
+    assert_eq!(script_p2wpkh.minimal_non_dust(), Amount::from_sat_u32(294));
     assert_eq!(
         script_p2wpkh.minimal_non_dust_custom(FeeRate::from_sat_per_vb_unchecked(6)),
         Some(Amount::from_sat_u32(588))
@@ -698,7 +698,7 @@ fn default_dust_value() {
         .push_opcode(OP_CHECKSIG)
         .into_script();
     assert!(script_p2pkh.is_p2pkh());
-    assert_eq!(script_p2pkh.minimal_non_dust(), Some(Amount::from_sat_u32(546)));
+    assert_eq!(script_p2pkh.minimal_non_dust(), Amount::from_sat_u32(546));
     assert_eq!(
         script_p2pkh.minimal_non_dust_custom(FeeRate::from_sat_per_vb_unchecked(6)),
         Some(Amount::from_sat_u32(1092))

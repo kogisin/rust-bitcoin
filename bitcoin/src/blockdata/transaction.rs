@@ -162,7 +162,7 @@ crate::internal_macros::define_extension_trait! {
         /// # Panics
         ///
         /// If output size * 4 overflows, this should never happen under normal conditions. Use
-        /// `Weght::from_vb_checked(self.size() as u64)` if you are concerned.
+        /// `Weight::from_vb_checked(self.size() as u64)` if you are concerned.
         fn weight(&self) -> Weight {
             // Size is equivalent to virtual size since all bytes of a TxOut are non-witness bytes.
             Weight::from_vb(self.size().to_u64())
@@ -183,8 +183,8 @@ crate::internal_macros::define_extension_trait! {
         /// To use a custom value, use [`minimal_non_dust_custom`].
         ///
         /// [`minimal_non_dust_custom`]: TxOut::minimal_non_dust_custom
-        fn minimal_non_dust(script_pubkey: ScriptBuf) -> Option<TxOut> {
-            Some(TxOut { value: script_pubkey.minimal_non_dust()?, script_pubkey })
+        fn minimal_non_dust(script_pubkey: ScriptBuf) -> TxOut {
+            TxOut { value: script_pubkey.minimal_non_dust(), script_pubkey }
         }
 
         /// Constructs a new `TxOut` with given script and the smallest possible `value` that is **not** dust
@@ -799,7 +799,7 @@ pub fn effective_value(
 /// preceding compact size. The length of preceding compact size is computed and added inside the
 /// function for convenience.
 ///
-/// If you  have the transaction already constructed (except for signatures) with a dummy value for
+/// If you have the transaction already constructed (except for signatures) with a dummy value for
 /// fee output you can use the return value of [`Transaction::script_pubkey_lens`] method directly
 /// as the second argument.
 ///

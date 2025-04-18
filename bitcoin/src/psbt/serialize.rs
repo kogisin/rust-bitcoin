@@ -206,7 +206,7 @@ impl Serialize for KeySource {
 
         rv.append(&mut self.0.to_byte_array().to_vec());
 
-        for cnum in self.1.into_iter() {
+        for cnum in &self.1 {
             rv.append(&mut serialize(&u32::from(*cnum)))
         }
 
@@ -216,8 +216,8 @@ impl Serialize for KeySource {
 
 impl Deserialize for KeySource {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        let (fingerprint, mut d) = bytes.split_first_chunk::<4>()
-            .ok_or(io::Error::from(io::ErrorKind::UnexpectedEof))?;
+        let (fingerprint, mut d) =
+            bytes.split_first_chunk::<4>().ok_or(io::Error::from(io::ErrorKind::UnexpectedEof))?;
 
         let fprint: Fingerprint = fingerprint.into();
         let mut dpath: Vec<ChildNumber> = Default::default();

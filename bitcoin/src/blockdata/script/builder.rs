@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use primitives::relative;
+
 use super::{opcode_to_verify, write_scriptint, Error, PushBytes, Script, ScriptBuf};
 use crate::locktime::absolute;
 use crate::opcodes::all::*;
@@ -72,12 +74,36 @@ impl Builder {
     pub(in crate::blockdata) fn push_int_non_minimal(self, data: i64) -> Builder {
         let mut buf = [0u8; 8];
         let len = write_scriptint(&mut buf, data);
-        self.push_slice(&<&PushBytes>::from(&buf)[..len])
+        self.push_slice_non_minimal(&<&PushBytes>::from(&buf)[..len])
     }
 
     /// Adds instructions to push some arbitrary data onto the stack.
-    pub fn push_slice<T: AsRef<PushBytes>>(mut self, data: T) -> Builder {
-        self.0.push_slice(data);
+    pub fn push_slice<T: AsRef<PushBytes>>(self, data: T) -> Builder {
+        let bytes = data.as_ref().as_bytes();
+        if bytes.len() == 1 && (bytes[0] == 0x81 || bytes[0] <= 16) {
+            match bytes[0] {
+                0x81 => self.push_opcode(OP_PUSHNUM_NEG1),
+                0 => self.push_opcode(OP_PUSHBYTES_0),
+                1..=16 => {
+                    self.push_opcode(Opcode::from(bytes[0] + (OP_PUSHNUM_1.to_u8() - 1)))
+                }
+                _ => self, // unreachable arm
+            }
+        } else {
+            self.push_slice_non_minimal(data.as_ref())
+        }
+    }
+
+    /// Adds instructions to push some arbitrary data onto the stack without minimality.
+    ///
+    /// Standardness rules require push minimality according to [CheckMinimalPush] of core.
+    ///
+    /// [CheckMinimalPush]: <https://github.com/bitcoin/bitcoin/blob/99a4ddf5ab1b3e514d08b90ad8565827fda7b63b/src/script/script.cpp#L366>
+    pub fn push_slice_non_minimal<T: AsRef<PushBytes>>(
+        mut self,
+        data: T,
+    ) -> Builder {
+        self.0.push_slice_non_minimal(data);
         self.1 = None;
         self
     }
@@ -115,7 +141,26 @@ impl Builder {
         self.push_int_unchecked(lock_time.to_consensus_u32().into())
     }
 
+    /// Adds instructions to push a relative lock time onto the stack.
+    ///
+    /// This is used when creating scripts that use CHECKSEQUENCEVERIFY (CSV) to enforce
+    /// relative time locks.
+    pub fn push_relative_lock_time(self, lock_time: relative::LockTime) -> Builder {
+        self.push_int_unchecked(lock_time.to_consensus_u32().into())
+    }
+
     /// Adds instructions to push a sequence number onto the stack.
+    ///
+    /// # Deprecated
+    /// This method is deprecated in favor of `push_relative_lock_time`.
+    ///
+    /// In Bitcoin script semantics, when using CHECKSEQUENCEVERIFY, you typically
+    /// want to push a relative locktime value to be compared against the input's
+    /// sequence number, not the sequence number itself.
+    #[deprecated(
+        since = "TBD",
+        note = "Use push_relative_lock_time instead for working with timelocks in scripts"
+    )]
     pub fn push_sequence(self, sequence: Sequence) -> Builder {
         self.push_int_unchecked(sequence.to_consensus_u32().into())
     }

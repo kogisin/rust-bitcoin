@@ -27,7 +27,8 @@ impl ScriptBuf {
 
     /// Converts byte vector into script.
     ///
-    /// This method doesn't (re)allocate.
+    /// This method doesn't (re)allocate. `bytes` is just the script bytes **not** consensus
+    /// encoding (i.e no length prefix).
     #[inline]
     pub const fn from_bytes(bytes: Vec<u8>) -> Self { Self(bytes) }
 
@@ -42,6 +43,10 @@ impl ScriptBuf {
     /// Converts the script into a byte vector.
     ///
     /// This method doesn't (re)allocate.
+    ///
+    /// # Returns
+    ///
+    /// Just the script bytes **not** consensus encoding (which includes a length prefix).
     #[inline]
     pub fn into_bytes(self) -> Vec<u8> { self.0 }
 
@@ -54,9 +59,7 @@ impl ScriptBuf {
     #[must_use]
     #[inline]
     pub fn into_boxed_script(self) -> Box<Script> {
-        // Copied from PathBuf::into_boxed_path
-        let rw = Box::into_raw(self.into_bytes().into_boxed_slice()) as *mut Script;
-        unsafe { Box::from_raw(rw) }
+        Script::from_boxed_bytes(self.into_bytes().into_boxed_slice())
     }
 
     /// Constructs a new empty script with pre-allocated capacity.
