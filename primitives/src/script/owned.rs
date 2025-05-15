@@ -16,6 +16,15 @@ use crate::prelude::{Box, Vec};
 /// Just as other similar types, this implements [`Deref`], so [deref coercions] apply. Also note
 /// that all the safety/validity restrictions that apply to [`Script`] apply to `ScriptBuf` as well.
 ///
+/// # Hexadecimal strings
+///
+/// Scripts are consensus encoded with a length prefix and as a result of this in some places in the
+/// eccosystem one will encounter hex strings that include the prefix while in other places the
+/// prefix is excluded. To support parsing and formatting scripts as hex we provide a bunch of
+/// different APIs and trait implementations. Please see [`examples/script.rs`] for a thorough
+/// example of all the APIs.
+///
+/// [`examples/script.rs`]: <https://github.com/rust-bitcoin/rust-bitcoin/blob/master/bitcoin/examples/script.rs>
 /// [deref coercions]: https://doc.rust-lang.org/std/ops/trait.Deref.html#more-on-deref-coercion
 #[derive(Default, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct ScriptBuf(Vec<u8>);
@@ -62,7 +71,7 @@ impl ScriptBuf {
         Script::from_boxed_bytes(self.into_bytes().into_boxed_slice())
     }
 
-    /// Constructs a new empty script with pre-allocated capacity.
+    /// Constructs a new empty script with at least the specified capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         ScriptBuf::from_bytes(Vec::with_capacity(capacity))

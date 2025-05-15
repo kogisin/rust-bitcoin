@@ -2,25 +2,24 @@
 
 //! Implements `Weight` and associated features.
 
+use core::num::NonZeroU64;
 use core::{fmt, ops};
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The factor that non-witness serialization data is multiplied by during weight calculation.
 pub const WITNESS_SCALE_FACTOR: usize = 4;
 
 mod encapsulate {
-    #[cfg(feature = "serde")]
-    use serde::{Deserialize, Serialize};
 
     /// The weight of a transaction or block.
     ///
     /// This is an integer newtype representing [`Weight`] in `wu`. It provides protection
     /// against mixing up types as well as basic formatting features.
     #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    #[cfg_attr(feature = "serde", serde(transparent))]
     pub struct Weight(u64);
 
     impl Weight {
@@ -221,6 +220,11 @@ crate::internal_macros::impl_op_for_references! {
 
         fn rem(self, rhs: Weight) -> Self::Output { self.to_wu() % rhs.to_wu() }
     }
+    impl ops::Div<NonZeroU64> for Weight {
+        type Output = Weight;
+
+        fn div(self, rhs: NonZeroU64) -> Self::Output{ Self::from_wu(self.to_wu() / rhs.get()) }
+    }
 }
 crate::internal_macros::impl_add_assign!(Weight);
 crate::internal_macros::impl_sub_assign!(Weight);
@@ -257,6 +261,28 @@ impl<'a> core::iter::Sum<&'a Weight> for Weight {
 
 crate::impl_parse_str_from_int_infallible!(Weight, u64, from_wu);
 
+#[cfg(feature = "serde")]
+impl Serialize for Weight {
+    #[inline]
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        u64::serialize(&self.to_wu(), s)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Weight {
+    #[inline]
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::from_wu(u64::deserialize(d)?))
+    }
+}
+
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for Weight {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -268,6 +294,7 @@ impl<'a> Arbitrary<'a> for Weight {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::num::NonZeroU64;
 
     const ONE: Weight = Weight::from_wu(1);
     const TWO: Weight = Weight::from_wu(2);
@@ -276,6 +303,17 @@ mod tests {
     #[test]
     fn sanity_check() {
         assert_eq!(Weight::MIN_TRANSACTION, Weight::from_wu(240));
+    }
+
+    #[test]
+    #[allow(clippy::op_ref)]
+    fn weight_div_nonzero() {
+        let w = Weight::from_wu(100);
+        let divisor = NonZeroU64::new(4).unwrap();
+        assert_eq!(w / divisor, Weight::from_wu(25));
+        // for borrowed variants
+        assert_eq!(&w / &divisor, Weight::from_wu(25));
+        assert_eq!(w / &divisor, Weight::from_wu(25));
     }
 
     #[test]

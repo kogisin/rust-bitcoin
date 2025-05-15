@@ -16,6 +16,7 @@
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -75,7 +76,7 @@ impl ChaCha20Poly1305 {
 
     /// Encrypt content in place and return the Poly1305 16-byte authentication tag.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `content` - Plaintext to be encrypted in place.
     /// - `aad`     - Optional metadata covered by the authentication tag.
@@ -110,7 +111,7 @@ impl ChaCha20Poly1305 {
 
     /// Decrypt the ciphertext in place if authentication tag is correct.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `content` - Ciphertext to be decrypted in place.
     /// - `tag`     - 16-byte authentication tag.
