@@ -6,6 +6,8 @@
 //! <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>.
 
 use core::fmt;
+#[cfg(feature = "arbitrary")]
+use arbitrary::{Arbitrary, Unstructured};
 
 use internals::ToU64 as _;
 use io::{BufRead, Write};
@@ -21,25 +23,21 @@ use crate::psbt::Error;
 ///
 /// `<key> := <keylen> <keytype> <keydata>`
 #[derive(Debug, PartialEq, Hash, Eq, Clone, Ord, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Key {
     /// The type of this PSBT key.
     pub type_value: u64, // Encoded as a compact size.
     /// The key data itself in raw byte form.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub key_data: Vec<u8>,
 }
 
 /// A PSBT key-value pair in its raw byte form.
 /// `<keypair> := <key> <value>`
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Pair {
     /// The key of this key-value pair.
     pub key: Key,
     /// The value data of this key-value pair in raw byte form.
     /// `<value> := <valuelen> <valuedata>`
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub value: Vec<u8>,
 }
 
@@ -49,19 +47,16 @@ pub type ProprietaryType = u64;
 /// Proprietary keys (i.e. keys starting with 0xFC byte) with their internal
 /// structure according to BIP 174.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ProprietaryKey<Subtype = ProprietaryType>
 where
     Subtype: Copy + From<u64> + Into<u64>,
 {
     /// Proprietary type prefix used for grouping together keys under some
     /// application and avoid namespace collision
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub prefix: Vec<u8>,
     /// Custom proprietary subtype
     pub subtype: Subtype,
     /// Additional key bytes (like serialized public key data etc)
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub key: Vec<u8>,
 }
 
@@ -193,5 +188,23 @@ where
         }
 
         Ok(deserialize(&key.key_data)?)
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for ProprietaryKey {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(ProprietaryKey {
+            prefix: Vec::<u8>::arbitrary(u)?,
+            subtype: u64::arbitrary(u)?,
+            key: Vec::<u8>::arbitrary(u)?
+        })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for Key {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Key { type_value: u.arbitrary()?, key_data: Vec::<u8>::arbitrary(u)? })
     }
 }

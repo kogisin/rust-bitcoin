@@ -10,15 +10,16 @@ use arbitrary::{Arbitrary, Unstructured};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::{Amount, FeeRate, NumOpResult};
+
 /// The factor that non-witness serialization data is multiplied by during weight calculation.
 pub const WITNESS_SCALE_FACTOR: usize = 4;
 
 mod encapsulate {
-
     /// The weight of a transaction or block.
     ///
-    /// This is an integer newtype representing [`Weight`] in `wu`. It provides protection
-    /// against mixing up types as well as basic formatting features.
+    /// This is an integer newtype representing weight in weight units. It provides protection
+    /// against mixing up the types, conversion functions, and basic formatting.
     #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
     pub struct Weight(u64);
 
@@ -36,7 +37,7 @@ mod encapsulate {
 pub use encapsulate::Weight;
 
 impl Weight {
-    /// 0 wu.
+    /// Zero weight units (wu).
     ///
     /// Equivalent to [`MIN`](Self::MIN), may better express intent in some contexts.
     pub const ZERO: Weight = Weight::from_wu(0);
@@ -160,6 +161,15 @@ impl Weight {
             Some(wu) => Some(Weight::from_wu(wu)),
             None => None,
         }
+    }
+
+    /// Checked fee rate multiplication.
+    ///
+    /// Computes the absolute fee amount for a given [`FeeRate`] at this weight. When the resulting
+    /// fee is a non-integer amount, the amount is rounded up, ensuring that the transaction fee is
+    /// enough instead of falling short if rounded down.
+    pub const fn mul_by_fee_rate(self, fee_rate: FeeRate) -> NumOpResult<Amount> {
+        fee_rate.mul_by_weight(self)
     }
 }
 
@@ -293,8 +303,9 @@ impl<'a> Arbitrary<'a> for Weight {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::num::NonZeroU64;
+
+    use super::*;
 
     const ONE: Weight = Weight::from_wu(1);
     const TWO: Weight = Weight::from_wu(2);

@@ -4,10 +4,10 @@
 //!
 //! This module describes BIP37 Connection Bloom filtering network messages.
 
+use bitcoin::consensus::{encode, Decodable, Encodable, ReadExt};
 use io::{BufRead, Write};
 
-use crate::consensus::{self, encode, Decodable, Encodable, ReadExt};
-use crate::internal_macros::impl_consensus_encoding;
+use crate::consensus::impl_consensus_encoding;
 
 /// `filterload` message sets the current bloom filter
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -52,7 +52,7 @@ impl Decodable for BloomFlags {
             0 => BloomFlags::None,
             1 => BloomFlags::All,
             2 => BloomFlags::PubkeyOnly,
-            _ => return Err(consensus::parse_failed_error("unknown bloom flag")),
+            _ => return Err(crate::consensus::parse_failed_error("unknown bloom flag")),
         })
     }
 }

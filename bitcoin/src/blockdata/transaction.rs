@@ -12,6 +12,8 @@
 
 use core::fmt;
 
+#[cfg(feature = "arbitrary")]
+use arbitrary::{Arbitrary, Unstructured};
 use hashes::sha256d;
 use internals::{compact_size, write_err, ToU64};
 use io::{BufRead, Write};
@@ -27,7 +29,6 @@ use crate::script::{Script, ScriptBuf, ScriptExt as _, ScriptExtPriv as _};
 use crate::sighash::{EcdsaSighashType, TapSighashType};
 use crate::witness::Witness;
 use crate::{Amount, FeeRate, SignedAmount};
-use units::NumOpResult;
 
 #[rustfmt::skip]            // Keep public re-exports separate.
 #[doc(inline)]
@@ -308,7 +309,7 @@ pub trait TransactionExt: sealed::Sealed {
     /// This is useful in combination with [`predict_weight`] if you have the transaction already
     /// constructed with a dummy value in the fee output which you'll adjust after calculating the
     /// weight.
-    fn script_pubkey_lens(&self) -> TxOutToScriptPubkeyLengthIter;
+    fn script_pubkey_lens(&self) -> TxOutToScriptPubkeyLengthIter<'_>;
 
     /// Counts the total number of sigops.
     ///
@@ -403,7 +404,7 @@ impl TransactionExt for Transaction {
 
     fn is_lock_time_enabled(&self) -> bool { self.input.iter().any(|i| i.enables_lock_time()) }
 
-    fn script_pubkey_lens(&self) -> TxOutToScriptPubkeyLengthIter {
+    fn script_pubkey_lens(&self) -> TxOutToScriptPubkeyLengthIter<'_> {
         TxOutToScriptPubkeyLengthIter { inner: self.output.iter() }
     }
 
@@ -516,11 +517,7 @@ impl TransactionExtPriv for Transaction {
                 1
             } else if witness_program.is_p2wsh() {
                 // Treat the last item of the witness as the witnessScript
-                return witness
-                    .last()
-                    .map(Script::from_bytes)
-                    .map(|s| s.count_sigops())
-                    .unwrap_or(0);
+                witness.last().map(Script::from_bytes).map(|s| s.count_sigops()).unwrap_or(0)
             } else {
                 0
             }
@@ -774,22 +771,18 @@ impl Decodable for Transaction {
 ///
 /// * `fee_rate` - the fee rate of the transaction being created.
 /// * `input_weight_prediction` - the predicted input weight.
-///
-/// # Returns
-///
-/// This will return [`NumOpResult::Error`] if the fee calculation (fee_rate * weight) overflows.
-/// Otherwise, [`NumOpResult::Valid`] will wrap the successful calculation.
+/// * `value` - The value of the output we are spending.
 pub fn effective_value(
     fee_rate: FeeRate,
     input_weight_prediction: InputWeightPrediction,
     value: Amount,
-) -> NumOpResult<SignedAmount> {
+) -> SignedAmount {
     let weight = input_weight_prediction.total_weight();
+    let fee = fee_rate.to_fee(weight);
 
-    fee_rate
-        .to_fee(weight)
-        .map(Amount::to_signed)
-        .and_then(|fee| value.to_signed() - fee)    // Cannot overflow.
+    // Cannot overflow because after conversion to signed Amount::MIN - Amount::MAX
+    // still fits in SignedAmount::MAX (0 - MAX = -MAX).
+    (value.to_signed() - fee.to_signed()).expect("cannot overflow")
 }
 
 /// Predicts the weight of a to-be-constructed transaction.
@@ -931,10 +924,10 @@ pub const fn predict_weight_from_slices(
 /// This helper type collects information about an input to be used in [`predict_weight`] function.
 /// It can only be created using the [`new`](InputWeightPrediction::new) function or using other
 /// associated constants/methods.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct InputWeightPrediction {
-    script_size: usize,
-    witness_size: usize,
+    script_size: u32,
+    witness_size: u32,
 }
 
 impl InputWeightPrediction {
@@ -996,6 +989,23 @@ impl InputWeightPrediction {
     /// If the input in your transaction uses Taproot key spend you can use this instead of
     /// [`InputWeightPrediction::new`].
     pub const P2TR_KEY_NON_DEFAULT_SIGHASH: Self = InputWeightPrediction::from_slice(0, &[65]);
+
+    const fn saturate_to_u32(x: usize) -> u32 {
+        if x > u32::MAX as usize {
+            u32::MAX
+        } else {
+            x as u32 //cast ok, condition prevents larger than u32::MAX.
+        }
+    }
+
+    const fn encoded_size(value: usize) -> u32 {
+        match value {
+            0..=0xFC => 1,
+            0xFD..=0xFFFF => 3,
+            0x10000..=0xFFFFFFFF => 5,
+            _ => 9,
+        }
+    }
 
     /// Input weight prediction corresponding to spending of P2WPKH output using [signature
     /// grinding].
@@ -1066,16 +1076,17 @@ impl InputWeightPrediction {
         T::Item: Borrow<usize>,
     {
         let (count, total_size) = witness_element_lengths.into_iter().fold(
-            (0usize, 0),
+            (0usize, 0u32),
             |(count, total_size), elem_len| {
                 let elem_len = *elem_len.borrow();
-                let elem_size = elem_len + compact_size::encoded_size(elem_len);
-                (count + 1, total_size + elem_size)
+                let elem_size =
+                    Self::saturate_to_u32(elem_len).saturating_add(Self::encoded_size(elem_len));
+                (count + 1, total_size.saturating_add(elem_size))
             },
         );
-        let witness_size =
-            if count > 0 { total_size + compact_size::encoded_size(count) } else { 0 };
-        let script_size = input_script_len + compact_size::encoded_size(input_script_len);
+        let witness_size = if count > 0 { total_size + Self::encoded_size(count) } else { 0 };
+        let script_size =
+            Self::saturate_to_u32(input_script_len) + Self::encoded_size(input_script_len);
 
         InputWeightPrediction { script_size, witness_size }
     }
@@ -1087,32 +1098,39 @@ impl InputWeightPrediction {
     /// `new` and thus is intended to be only used in `const` context.
     pub const fn from_slice(input_script_len: usize, witness_element_lengths: &[usize]) -> Self {
         let mut i = 0;
-        let mut total_size = 0;
+        let mut total_size: u32 = 0;
         // for loops not supported in const fn
         while i < witness_element_lengths.len() {
             let elem_len = witness_element_lengths[i];
-            let elem_size = elem_len + compact_size::encoded_size_const(elem_len as u64);
-            total_size += elem_size;
+            let elem_size =
+                Self::saturate_to_u32(elem_len).saturating_add(Self::encoded_size(elem_len));
+            total_size = total_size.saturating_add(elem_size);
             i += 1;
         }
         let witness_size = if !witness_element_lengths.is_empty() {
-            total_size + compact_size::encoded_size_const(witness_element_lengths.len() as u64)
+            total_size.saturating_add(Self::encoded_size(witness_element_lengths.len()))
         } else {
             0
         };
-        let script_size =
-            input_script_len + compact_size::encoded_size_const(input_script_len as u64);
+        let script_size = Self::saturate_to_u32(input_script_len)
+            .saturating_add(Self::encoded_size(input_script_len));
 
         InputWeightPrediction { script_size, witness_size }
     }
 
     /// Computes the **signature weight** added to a transaction by an input with this weight prediction,
     /// not counting the prevout (txid, index), sequence, potential witness flag bytes or the witness count varint.
+    ///
+    /// This function's internal arithmetic saturates at u32::MAX, so the return value of this
+    /// function may be inaccurate for extremely large witness predictions.
     #[deprecated(since = "TBD", note = "use `InputWeightPrediction::witness_weight()` instead")]
     pub const fn weight(&self) -> Weight { Self::witness_weight(self) }
 
     /// Computes the signature, prevout (txid, index), and sequence weights of this weight
     /// prediction.
+    ///
+    /// This function's internal arithmetic saturates at u32::MAX, so the return value of this
+    /// function may be inaccurate for extremely large witness predictions.
     ///
     /// See also [`InputWeightPrediction::witness_weight`]
     pub const fn total_weight(&self) -> Weight {
@@ -1125,12 +1143,66 @@ impl InputWeightPrediction {
     /// Computes the **signature weight** added to a transaction by an input with this weight prediction,
     /// not counting the prevout (txid, index), sequence, potential witness flag bytes or the witness count varint.
     ///
+    /// This function's internal arithmetic saturates at u32::MAX, so the return value of this
+    /// function may be inaccurate for extremely large witness predictions.
+    ///
     /// See also [`InputWeightPrediction::total_weight`]
     pub const fn witness_weight(&self) -> Weight {
         let wu = self.script_size * 4 + self.witness_size;
         let wu = wu as u64; // Can't use `ToU64` in const context.
         Weight::from_wu(wu)
     }
+}
+
+internals::transparent_newtype! {
+    /// A wrapper type for the coinbase transaction of a block.
+    ///
+    /// This type exists to distinguish coinbase transactions from regular ones at the type level.
+    #[derive(Clone, PartialEq, Eq, Debug, Hash)]
+    pub struct Coinbase(Transaction);
+
+    impl Coinbase {
+        /// Creates a reference to `Coinbase` from a reference to the inner `Transaction`.
+        ///
+        /// This method does not validate that the transaction is actually a coinbase transaction.
+        /// The caller must ensure that the transaction is indeed a valid coinbase transaction
+        pub fn assume_coinbase_ref(inner: &_) -> &Self;
+    }
+}
+
+impl Coinbase {
+    /// Creates a `Coinbase` wrapper assuming this transaction is a coinbase transaction.
+    ///
+    /// This method does not validate that the transaction is actually a coinbase transaction.
+    /// The caller must ensure that this transaction is indeed a valid coinbase transaction.
+    pub fn assume_coinbase(tx: Transaction) -> Self { Self(tx) }
+
+    /// Returns the first input of this coinbase transaction.
+    ///
+    /// This method is infallible because a valid coinbase transaction is guaranteed
+    /// to have exactly one input.
+    pub fn first_input(&self) -> &TxIn { &self.0.input[0] }
+
+    /// Returns a reference to the underlying transaction.
+    ///
+    /// Warning: The coinbase input contains dummy prevouts that should not be treated as real prevouts.
+    #[doc(alias = "as_inner")]
+    pub fn as_transaction(&self) -> &Transaction { &self.0 }
+
+    /// Returns the underlying transaction.
+    ///
+    /// Warning: The coinbase input contains dummy prevouts that should not be treated as real prevouts.
+    #[doc(alias = "into_inner")]
+    pub fn into_transaction(self) -> Transaction { self.0 }
+
+    /// Computes the [`Txid`] of this coinbase transaction.
+    pub fn compute_txid(&self) -> Txid { self.0.compute_txid() }
+
+    /// Returns the wtxid of this coinbase transaction.
+    ///
+    /// For coinbase transactions, this is always `Wtxid::COINBASE`.
+    #[doc(alias = "compute_wtxid")]
+    pub const fn wtxid(&self) -> Wtxid { Wtxid::COINBASE }
 }
 
 mod sealed {
@@ -1142,6 +1214,30 @@ mod sealed {
     impl Sealed for super::TxIn {}
     impl Sealed for super::TxOut {}
     impl Sealed for super::Version {}
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for InputWeightPrediction {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        match u.int_in_range(0..=7)? {
+            0 => Ok(InputWeightPrediction::P2WPKH_MAX),
+            1 => Ok(InputWeightPrediction::NESTED_P2WPKH_MAX),
+            2 => Ok(InputWeightPrediction::P2PKH_COMPRESSED_MAX),
+            3 => Ok(InputWeightPrediction::P2PKH_UNCOMPRESSED_MAX),
+            4 => Ok(InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH),
+            5 => Ok(InputWeightPrediction::P2TR_KEY_NON_DEFAULT_SIGHASH),
+            6 => {
+                let input_script_len = usize::arbitrary(u)?;
+                let witness_element_lengths: Vec<usize> = Vec::arbitrary(u)?;
+                Ok(InputWeightPrediction::new(input_script_len, witness_element_lengths))
+            }
+            _ => {
+                let input_script_len = usize::arbitrary(u)?;
+                let witness_element_lengths: Vec<usize> = Vec::arbitrary(u)?;
+                Ok(InputWeightPrediction::from_slice(input_script_len, &witness_element_lengths))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1661,10 +1757,9 @@ mod tests {
     fn effective_value_happy_path() {
         let value = "1 cBTC".parse::<Amount>().unwrap();
         let fee_rate = FeeRate::from_sat_per_kwu(10);
-        let effective_value =
-            effective_value(fee_rate, InputWeightPrediction::P2WPKH_MAX, value).unwrap();
+        let effective_value = effective_value(fee_rate, InputWeightPrediction::P2WPKH_MAX, value);
 
-        // 10 sat/kwu * 272 wu = 4 sats (rounding up)
+        // 10 sat/kwu * 272 wu = 3 sats (rounding up)
         let expected_fee = "3 sats".parse::<SignedAmount>().unwrap();
         let expected_effective_value = (value.to_signed() - expected_fee).unwrap();
         assert_eq!(effective_value, expected_effective_value);
@@ -1674,7 +1769,8 @@ mod tests {
     fn effective_value_fee_rate_does_not_overflow() {
         let eff_value =
             effective_value(FeeRate::MAX, InputWeightPrediction::P2WPKH_MAX, Amount::ZERO);
-        assert!(eff_value.is_error());
+        let want = SignedAmount::from_sat(-1254378597012250).unwrap(); // U64::MAX / 4_000 because of FeeRate::MAX
+        assert_eq!(eff_value, want)
     }
 
     #[test]
@@ -1943,7 +2039,7 @@ mod tests {
     // needless_borrows_for_generic_args incorrecctly identifies &[] as a needless borrow
     #[allow(clippy::needless_borrows_for_generic_args)]
     fn weight_prediction_new() {
-        let p2wpkh_max = InputWeightPrediction::new(0, [72,33]);
+        let p2wpkh_max = InputWeightPrediction::new(0, [72, 33]);
         assert_eq!(p2wpkh_max.script_size, 1);
         assert_eq!(p2wpkh_max.witness_size, 108);
         assert_eq!(p2wpkh_max.total_weight(), Weight::from_wu(272));
@@ -2022,6 +2118,25 @@ mod tests {
 
         let pretty_txid = "0x0000000000000000000000000000000000000000000000000000000000000000";
         assert_eq!(pretty_txid, format!("{:#}", &outpoint.txid));
+    }
+
+    #[test]
+    fn coinbase_assume_methods() {
+        use crate::constants;
+        use crate::network::Network;
+
+        let genesis = constants::genesis_block(Network::Bitcoin);
+        let coinbase_tx = &genesis.transactions()[0];
+
+        // Test that we can create a Coinbase reference using assume_coinbase_ref
+        let coinbase_ref = Coinbase::assume_coinbase_ref(coinbase_tx);
+        assert_eq!(coinbase_ref.compute_txid(), coinbase_tx.compute_txid());
+        assert_eq!(coinbase_ref.wtxid(), Wtxid::COINBASE);
+
+        // Test that we can create a Coinbase using assume_coinbase
+        let coinbase_owned = Coinbase::assume_coinbase(coinbase_tx.clone());
+        assert_eq!(coinbase_owned.compute_txid(), coinbase_tx.compute_txid());
+        assert_eq!(coinbase_owned.wtxid(), Wtxid::COINBASE);
     }
 }
 

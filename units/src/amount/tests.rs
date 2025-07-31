@@ -10,9 +10,6 @@ use core::num::{NonZeroI64, NonZeroU64};
 #[cfg(feature = "std")]
 use std::panic;
 
-#[cfg(feature = "serde")]
-use ::serde::{Deserialize, Serialize};
-
 use super::*;
 #[cfg(feature = "alloc")]
 use crate::{FeeRate, Weight};
@@ -55,8 +52,14 @@ fn sanity_check() {
 
 #[test]
 fn check_if_num_is_too_precise() {
-    assert_eq!(is_too_precise("1234", 3).unwrap(), 3);
-    assert_eq!(is_too_precise("1234.1234", 3).unwrap(), 3);
+    // Has decimal, not too precise
+    assert_eq!(is_too_precise("1234.5678", 4), Some(0));
+    // Has decimal, is too precise
+    assert_eq!(is_too_precise("1234.5678", 3), Some(3));
+    // No decimal, not too precise
+    assert_eq!(is_too_precise("1234", 4), Some(0));
+    // No decimal, is too precise
+    assert_eq!(is_too_precise("1234", 2), Some(3));
 }
 
 #[test]
@@ -67,7 +70,7 @@ fn from_str_zero() {
         for v in &["0", "000"] {
             let s = format!("{} {}", v, denom);
             match s.parse::<Amount>() {
-                Err(e) => panic!("failed to crate amount from {}: {:?}", s, e),
+                Err(e) => panic!("failed to create amount from {}: {:?}", s, e),
                 Ok(amount) => assert_eq!(amount, Amount::ZERO),
             }
         }
@@ -230,6 +233,10 @@ fn add() {
     assert!(ssat(-127) + ssat(179) == ssat(52).into());
     assert!(ssat(127) + ssat(-179) == ssat(-52).into());
     assert!(ssat(-127) + ssat(-179) == ssat(-306).into());
+
+    // Implemented using generic impl.
+    assert!(res(127) + sat(179) == sat(306).into());
+    assert!(sres(127) + ssat(179) == ssat(306).into());
 }
 
 #[test]
@@ -243,6 +250,10 @@ fn sub() {
     assert!(ssat(-127) - ssat(179) == ssat(-306).into());
     assert!(ssat(127) - ssat(-179) == ssat(306).into());
     assert!(ssat(-127) - ssat(-179) == ssat(52).into());
+
+    // Implemented using generic impl.
+    assert!(res(179) - sat(127) == sat(52).into());
+    assert!(sres(179) - ssat(127) == ssat(52).into());
 }
 
 #[test]
@@ -259,6 +270,7 @@ fn checked_arithmetic() {
 #[test]
 fn positive_sub() {
     assert_eq!(ssat(10).positive_sub(ssat(7)).unwrap(), ssat(3));
+    assert_eq!(ssat(10).positive_sub(ssat(10)).unwrap(), ssat(0));
     assert!(ssat(-10).positive_sub(ssat(7)).is_none());
     assert!(ssat(10).positive_sub(ssat(-7)).is_none());
     assert!(ssat(10).positive_sub(ssat(11)).is_none());
@@ -268,36 +280,36 @@ fn positive_sub() {
 #[test]
 fn amount_checked_div_by_weight_ceil() {
     let weight = Weight::from_kwu(1).unwrap();
-    let fee_rate = sat(1).checked_div_by_weight_ceil(weight).unwrap();
+    let fee_rate = sat(1).div_by_weight_ceil(weight).unwrap();
     // 1 sats / 1,000 wu = 1 sats/kwu
     assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(1));
 
     let weight = Weight::from_wu(381);
-    let fee_rate = sat(329).checked_div_by_weight_ceil(weight).unwrap();
+    let fee_rate = sat(329).div_by_weight_ceil(weight).unwrap();
     // 329 sats / 381 wu = 863.5 sats/kwu
     // round up to 864
     assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(864));
 
-    let fee_rate = Amount::ONE_SAT.checked_div_by_weight_ceil(Weight::ZERO);
-    assert!(fee_rate.is_none());
+    let fee_rate = Amount::ONE_SAT.div_by_weight_ceil(Weight::ZERO);
+    assert!(fee_rate.is_error());
 }
 
 #[cfg(feature = "alloc")]
 #[test]
 fn amount_checked_div_by_weight_floor() {
     let weight = Weight::from_kwu(1).unwrap();
-    let fee_rate = sat(1).checked_div_by_weight_floor(weight).unwrap();
+    let fee_rate = sat(1).div_by_weight_floor(weight).unwrap();
     // 1 sats / 1,000 wu = 1 sats/kwu
     assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(1));
 
     let weight = Weight::from_wu(381);
-    let fee_rate = sat(329).checked_div_by_weight_floor(weight).unwrap();
+    let fee_rate = sat(329).div_by_weight_floor(weight).unwrap();
     // 329 sats / 381 wu = 863.5 sats/kwu
     // round down to 863
     assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(863));
 
-    let fee_rate = Amount::ONE_SAT.checked_div_by_weight_floor(Weight::ZERO);
-    assert!(fee_rate.is_none());
+    let fee_rate = Amount::ONE_SAT.div_by_weight_floor(Weight::ZERO);
+    assert!(fee_rate.is_error());
 }
 
 #[cfg(feature = "alloc")]
@@ -307,31 +319,31 @@ fn amount_checked_div_by_fee_rate() {
     let fee_rate = FeeRate::from_sat_per_kwu(2);
 
     // Test floor division
-    let weight = amount.checked_div_by_fee_rate_floor(fee_rate).unwrap();
+    let weight = amount.div_by_fee_rate_floor(fee_rate).unwrap();
     // 1000 sats / (2 sats/kwu) = 500,000 wu
     assert_eq!(weight, Weight::from_wu(500_000));
 
     // Test ceiling division
-    let weight = amount.checked_div_by_fee_rate_ceil(fee_rate).unwrap();
+    let weight = amount.div_by_fee_rate_ceil(fee_rate).unwrap();
     assert_eq!(weight, Weight::from_wu(500_000)); // Same result for exact division
 
     // Test truncation behavior
     let amount = sat(1000);
     let fee_rate = FeeRate::from_sat_per_kwu(3);
-    let floor_weight = amount.checked_div_by_fee_rate_floor(fee_rate).unwrap();
-    let ceil_weight = amount.checked_div_by_fee_rate_ceil(fee_rate).unwrap();
+    let floor_weight = amount.div_by_fee_rate_floor(fee_rate).unwrap();
+    let ceil_weight = amount.div_by_fee_rate_ceil(fee_rate).unwrap();
     assert_eq!(floor_weight, Weight::from_wu(333_333));
     assert_eq!(ceil_weight, Weight::from_wu(333_334));
 
     // Test division by zero
     let zero_fee_rate = FeeRate::from_sat_per_kwu(0);
-    assert!(amount.checked_div_by_fee_rate_floor(zero_fee_rate).is_none());
-    assert!(amount.checked_div_by_fee_rate_ceil(zero_fee_rate).is_none());
+    assert!(amount.div_by_fee_rate_floor(zero_fee_rate).is_error());
+    assert!(amount.div_by_fee_rate_ceil(zero_fee_rate).is_error());
 
     // Test with maximum amount
     let max_amount = Amount::MAX;
     let small_fee_rate = FeeRate::from_sat_per_kwu(1);
-    let weight = max_amount.checked_div_by_fee_rate_floor(small_fee_rate).unwrap();
+    let weight = max_amount.div_by_fee_rate_floor(small_fee_rate).unwrap();
     // 21_000_000_0000_0000 sats / (1 sat/kwu) = 2_100_000_000_000_000_000 wu
     assert_eq!(weight, Weight::from_wu(2_100_000_000_000_000_000));
 }
@@ -827,273 +839,38 @@ fn to_string_with_denomination_from_str_roundtrip() {
     );
 }
 
-#[cfg(feature = "serde")]
-#[test]
-fn serde_as_sat() {
-    #[derive(Serialize, Deserialize, PartialEq, Debug)]
-    struct T {
-        #[serde(with = "crate::amount::serde::as_sat")]
-        pub amt: Amount,
-        #[serde(with = "crate::amount::serde::as_sat")]
-        pub samt: SignedAmount,
-    }
-
-    serde_test::assert_tokens(
-        &T { amt: sat(123_456_789), samt: ssat(-123_456_789) },
-        &[
-            serde_test::Token::Struct { name: "T", len: 2 },
-            serde_test::Token::Str("amt"),
-            serde_test::Token::U64(123_456_789),
-            serde_test::Token::Str("samt"),
-            serde_test::Token::I64(-123_456_789),
-            serde_test::Token::StructEnd,
-        ],
-    );
-}
-
-#[cfg(feature = "serde")]
-#[cfg(feature = "alloc")]
-#[test]
-#[allow(clippy::inconsistent_digit_grouping)] // Group to show 100,000,000 sats per bitcoin.
-fn serde_as_btc() {
-    use serde_json;
-
-    #[derive(Serialize, Deserialize, PartialEq, Debug)]
-    struct T {
-        #[serde(with = "crate::amount::serde::as_btc")]
-        pub amt: Amount,
-        #[serde(with = "crate::amount::serde::as_btc")]
-        pub samt: SignedAmount,
-    }
-
-    let orig = T { amt: sat(20_000_000__000_000_01), samt: ssat(-20_000_000__000_000_01) };
-
-    let json = "{\"amt\": 20000000.00000001, \
-                \"samt\": -20000000.00000001}";
-    let t: T = serde_json::from_str(json).unwrap();
-    assert_eq!(t, orig);
-
-    let value: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(t, serde_json::from_value(value).unwrap());
-
-    // errors
-    let t: Result<T, serde_json::Error> =
-        serde_json::from_str("{\"amt\": 1000000.000000001, \"samt\": 1}");
-    assert!(t.unwrap_err().to_string().contains(
-        &ParseAmountError(ParseAmountErrorInner::TooPrecise(TooPreciseError { position: 16 }))
-            .to_string()
-    ));
-    let t: Result<T, serde_json::Error> = serde_json::from_str("{\"amt\": -1, \"samt\": 1}");
-    assert!(t.unwrap_err().to_string().contains(&OutOfRangeError::negative().to_string()));
-}
-
-#[cfg(feature = "serde")]
-#[cfg(feature = "alloc")]
-#[test]
-fn serde_as_str() {
-    #[derive(Serialize, Deserialize, PartialEq, Debug)]
-    struct T {
-        #[serde(with = "crate::amount::serde::as_str")]
-        pub amt: Amount,
-        #[serde(with = "crate::amount::serde::as_str")]
-        pub samt: SignedAmount,
-    }
-
-    serde_test::assert_tokens(
-        &T { amt: sat(123_456_789), samt: ssat(-123_456_789) },
-        &[
-            serde_test::Token::Struct { name: "T", len: 2 },
-            serde_test::Token::String("amt"),
-            serde_test::Token::String("1.23456789"),
-            serde_test::Token::String("samt"),
-            serde_test::Token::String("-1.23456789"),
-            serde_test::Token::StructEnd,
-        ],
-    );
-}
-
-#[cfg(feature = "serde")]
-#[cfg(feature = "alloc")]
-#[test]
-#[allow(clippy::inconsistent_digit_grouping)] // Group to show 100,000,000 sats per bitcoin.
-fn serde_as_btc_opt() {
-    use serde_json;
-
-    #[derive(Serialize, Deserialize, PartialEq, Debug, Eq)]
-    struct T {
-        #[serde(default, with = "crate::amount::serde::as_btc::opt")]
-        pub amt: Option<Amount>,
-        #[serde(default, with = "crate::amount::serde::as_btc::opt")]
-        pub samt: Option<SignedAmount>,
-    }
-
-    let with = T { amt: Some(sat(2_500_000_00)), samt: Some(ssat(-2_500_000_00)) };
-    let without = T { amt: None, samt: None };
-
-    // Test Roundtripping
-    for s in [&with, &without] {
-        let v = serde_json::to_string(s).unwrap();
-        let w: T = serde_json::from_str(&v).unwrap();
-        assert_eq!(w, *s);
-    }
-
-    let t: T = serde_json::from_str("{\"amt\": 2.5, \"samt\": -2.5}").unwrap();
-    assert_eq!(t, with);
-
-    let t: T = serde_json::from_str("{}").unwrap();
-    assert_eq!(t, without);
-
-    let value_with: serde_json::Value =
-        serde_json::from_str("{\"amt\": 2.5, \"samt\": -2.5}").unwrap();
-    assert_eq!(with, serde_json::from_value(value_with).unwrap());
-
-    let value_without: serde_json::Value = serde_json::from_str("{}").unwrap();
-    assert_eq!(without, serde_json::from_value(value_without).unwrap());
-}
-
-#[cfg(feature = "serde")]
-#[cfg(feature = "alloc")]
-#[test]
-#[allow(clippy::inconsistent_digit_grouping)] // Group to show 100,000,000 sats per bitcoin.
-fn serde_as_sat_opt() {
-    use serde_json;
-
-    #[derive(Serialize, Deserialize, PartialEq, Debug, Eq)]
-    struct T {
-        #[serde(default, with = "crate::amount::serde::as_sat::opt")]
-        pub amt: Option<Amount>,
-        #[serde(default, with = "crate::amount::serde::as_sat::opt")]
-        pub samt: Option<SignedAmount>,
-    }
-
-    let with = T { amt: Some(sat(2_500_000_00)), samt: Some(ssat(-2_500_000_00)) };
-    let without = T { amt: None, samt: None };
-
-    // Test Roundtripping
-    for s in [&with, &without] {
-        let v = serde_json::to_string(s).unwrap();
-        let w: T = serde_json::from_str(&v).unwrap();
-        assert_eq!(w, *s);
-    }
-
-    let t: T = serde_json::from_str("{\"amt\": 250000000, \"samt\": -250000000}").unwrap();
-    assert_eq!(t, with);
-
-    let t: T = serde_json::from_str("{}").unwrap();
-    assert_eq!(t, without);
-
-    let value_with: serde_json::Value =
-        serde_json::from_str("{\"amt\": 250000000, \"samt\": -250000000}").unwrap();
-    assert_eq!(with, serde_json::from_value(value_with).unwrap());
-
-    let value_without: serde_json::Value = serde_json::from_str("{}").unwrap();
-    assert_eq!(without, serde_json::from_value(value_without).unwrap());
-}
-
-#[cfg(feature = "serde")]
-#[cfg(feature = "alloc")]
-#[test]
-#[allow(clippy::inconsistent_digit_grouping)] // Group to show 100,000,000 sats per bitcoin.
-fn serde_as_str_opt() {
-    use serde_json;
-
-    #[derive(Serialize, Deserialize, PartialEq, Debug, Eq)]
-    struct T {
-        #[serde(default, with = "crate::amount::serde::as_str::opt")]
-        pub amt: Option<Amount>,
-        #[serde(default, with = "crate::amount::serde::as_str::opt")]
-        pub samt: Option<SignedAmount>,
-    }
-
-    let with = T { amt: Some(sat(123_456_789)), samt: Some(ssat(-123_456_789)) };
-    let without = T { amt: None, samt: None };
-
-    // Test Roundtripping
-    for s in [&with, &without] {
-        let v = serde_json::to_string(s).unwrap();
-        let w: T = serde_json::from_str(&v).unwrap();
-        assert_eq!(w, *s);
-    }
-
-    let t: T =
-        serde_json::from_str("{\"amt\": \"1.23456789\", \"samt\": \"-1.23456789\"}").unwrap();
-    assert_eq!(t, with);
-
-    let t: T = serde_json::from_str("{}").unwrap();
-    assert_eq!(t, without);
-
-    let value_with: serde_json::Value =
-        serde_json::from_str("{\"amt\": \"1.23456789\", \"samt\": \"-1.23456789\"}").unwrap();
-    assert_eq!(with, serde_json::from_value(value_with).unwrap());
-
-    let value_without: serde_json::Value = serde_json::from_str("{}").unwrap();
-    assert_eq!(without, serde_json::from_value(value_without).unwrap());
-}
-
 #[test]
 fn sum_amounts() {
-    assert_eq!([].iter().sum::<NumOpResult<Amount>>(), Amount::ZERO.into());
-    assert_eq!([].iter().sum::<NumOpResult<SignedAmount>>(), SignedAmount::ZERO.into());
-
-    let results =
-        [NumOpResult::Valid(sat(42)), NumOpResult::Valid(sat(1337)), NumOpResult::Valid(sat(21))];
-    assert_eq!(results.iter().sum::<NumOpResult<Amount>>(), NumOpResult::Valid(sat(1400)));
-
-    let signed_results = [
-        NumOpResult::Valid(ssat(42)),
-        NumOpResult::Valid(ssat(1337)),
-        NumOpResult::Valid(ssat(21)),
-    ];
-    assert_eq!(
-        signed_results.iter().sum::<NumOpResult<SignedAmount>>(),
-        NumOpResult::Valid(ssat(1400))
-    );
+    let empty: [NumOpResult<Amount>; 0] = [];
+    assert_eq!(empty.into_iter().sum::<NumOpResult<_>>(), NumOpResult::Valid(Amount::ZERO));
+    let empty: [NumOpResult<SignedAmount>; 0] = [];
+    assert_eq!(empty.into_iter().sum::<NumOpResult<_>>(), NumOpResult::Valid(SignedAmount::ZERO));
 
     let amounts = [sat(42), sat(1337), sat(21)];
-    assert_eq!(
-        amounts.iter().map(|a| NumOpResult::Valid(*a)).sum::<NumOpResult<Amount>>(),
-        sat(1400).into(),
-    );
-    assert_eq!(
-        amounts.into_iter().map(NumOpResult::Valid).sum::<NumOpResult<Amount>>(),
-        sat(1400).into(),
-    );
-
-    let amounts = [ssat(-42), ssat(1337), ssat(21)];
-    assert_eq!(
-        amounts.iter().map(NumOpResult::from).sum::<NumOpResult<SignedAmount>>(),
-        ssat(1316).into(),
-    );
-    assert_eq!(
-        amounts.into_iter().map(NumOpResult::from).sum::<NumOpResult<SignedAmount>>(),
-        ssat(1316).into()
-    );
-}
-
-#[test]
-fn checked_sum_amounts() {
-    assert_eq!([].into_iter().checked_sum(), Some(Amount::ZERO));
-    assert_eq!([].into_iter().checked_sum(), Some(SignedAmount::ZERO));
-
-    let amounts = [sat(42), sat(1337), sat(21)];
-    let sum = amounts.into_iter().checked_sum();
-    assert_eq!(sum, Some(sat(1400)));
+    let sum = amounts.into_iter().map(NumOpResult::from).sum::<NumOpResult<Amount>>().unwrap();
+    assert_eq!(sum, sat(1400));
 
     let amounts = [Amount::MAX_MONEY, sat(1337), sat(21)];
-    let sum = amounts.into_iter().checked_sum();
-    assert_eq!(sum, None);
+    assert!(amounts.into_iter().map(NumOpResult::from).sum::<NumOpResult<Amount>>().is_error());
 
     let amounts = [SignedAmount::MIN, ssat(-1), ssat(21)];
-    let sum = amounts.into_iter().checked_sum();
-    assert_eq!(sum, None);
+    assert!(amounts
+        .into_iter()
+        .map(NumOpResult::from)
+        .sum::<NumOpResult<SignedAmount>>()
+        .is_error());
 
     let amounts = [SignedAmount::MAX, ssat(1), ssat(21)];
-    let sum = amounts.into_iter().checked_sum();
-    assert_eq!(sum, None);
+    assert!(amounts
+        .into_iter()
+        .map(NumOpResult::from)
+        .sum::<NumOpResult<SignedAmount>>()
+        .is_error());
 
     let amounts = [ssat(42), ssat(3301), ssat(21)];
-    let sum = amounts.into_iter().checked_sum();
-    assert_eq!(sum, Some(ssat(3364)));
+    let sum =
+        amounts.into_iter().map(NumOpResult::from).sum::<NumOpResult<SignedAmount>>().unwrap();
+    assert_eq!(sum, ssat(3364));
 }
 
 #[test]

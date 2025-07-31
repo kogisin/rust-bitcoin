@@ -63,7 +63,7 @@ static SCRIPT: ScriptBuf = ScriptBuf::new();
 static BYTES: [u8; 32] = [0x00; 32];
 
 /// Public structs that derive common traits.
-// C-COMMON-TRAITS excluding `Debug, Default, Display, Ord, PartialOrd, Hash`.
+// C-COMMON-TRAITS excluding `Debug`, `Default`, `Display`, `Ord`, `PartialOrd`, `Hash`.
 #[derive(Clone, PartialEq, Eq)]
 struct CommonTraits {
     a: block::Block<Checked>,
@@ -120,7 +120,7 @@ struct Clone<'a> {
 }
 
 /// Public structs that derive common traits.
-// C-COMMON-TRAITS excluding `Clone`, `Debug, `Default`, and `Display`
+// C-COMMON-TRAITS excluding `Clone`, `Debug`, `Default`, and `Display`
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Ord {
     // a: block::Block<Checked>,
@@ -163,14 +163,12 @@ struct Default {
 #[derive(Debug, Clone, PartialEq, Eq)] // All public types implement Debug (C-DEBUG).
 struct Errors {
     a: transaction::ParseOutPointError,
-    b: relative::IncompatibleHeightError,
-    c: relative::IncompatibleTimeError,
-    d: relative::IncompatibleHeightError,
-    e: relative::IncompatibleTimeError,
-    f: relative::DisabledLockTimeError,
-    g: relative::DisabledLockTimeError,
-    h: script::RedeemScriptSizeError,
-    i: script::WitnessScriptSizeError,
+    b: relative::error::DisabledLockTimeError,
+    c: relative::error::IsSatisfiedByError,
+    d: relative::error::IsSatisfiedByHeightError,
+    e: relative::error::IsSatisfiedByTimeError,
+    f: script::RedeemScriptSizeError,
+    g: script::WitnessScriptSizeError,
 }
 
 #[test]
@@ -211,9 +209,10 @@ fn api_can_use_types_from_crate_root() {
 
 #[test]
 fn api_can_use_all_types_from_module_locktime() {
-    use bitcoin_primitives::locktime::relative::{
-        DisabledLockTimeError, IncompatibleHeightError, IncompatibleTimeError, LockTime,
+    use bitcoin_primitives::locktime::relative::error::{
+        DisabledLockTimeError, InvalidHeightError, InvalidTimeError,
     };
+    use bitcoin_primitives::locktime::relative::LockTime;
     use bitcoin_primitives::locktime::{absolute, relative};
 }
 

@@ -1,40 +1,45 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Bitcoin p2p network types.
-//!
-//! This module defines support for (de)serialization and network transport
-//! of Bitcoin data and Bitcoin p2p network messages.
+//! # Rust Bitcoin Peer to Peer Message Types
 
-#[cfg(feature = "std")]
+// Experimental features we need.
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+// Coding conventions.
+#![warn(missing_docs)]
+#![warn(deprecated_in_future)]
+#![doc(test(attr(warn(unused))))]
+// Pedantic lints that we enforce.
+#![warn(clippy::return_self_not_must_use)]
+// Exclude lints we don't think are valuable.
+#![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
+#![allow(clippy::manual_range_contains)] // More readable than clippy's format.
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+
 pub mod address;
-#[cfg(feature = "std")]
+mod consensus;
 pub mod message;
-#[cfg(feature = "std")]
 pub mod message_blockdata;
-#[cfg(feature = "std")]
 pub mod message_bloom;
-#[cfg(feature = "std")]
 pub mod message_compact_blocks;
-#[cfg(feature = "std")]
 pub mod message_filter;
-#[cfg(feature = "std")]
 pub mod message_network;
+mod network_ext;
+
+extern crate alloc;
 
 use core::str::FromStr;
 use core::{fmt, ops};
+use std::borrow::{Borrow, BorrowMut, ToOwned};
 
+use bitcoin::consensus::encode::{self, Decodable, Encodable};
+use bitcoin::network::{Network, Params, TestnetVersion};
 use hex::FromHex;
-use internals::{impl_to_hex_from_lower_hex, write_err};
+use internals::impl_to_hex_from_lower_hex;
 use io::{BufRead, Write};
-
-use crate::consensus::encode::{self, Decodable, Encodable};
-use crate::network::{Network, Params, TestnetVersion};
-use crate::prelude::{Borrow, BorrowMut, String, ToOwned};
 
 #[rustfmt::skip]
 #[doc(inline)]
-#[cfg(feature = "std")]
-pub use self::address::Address;
+pub use self::{address::Address, network_ext::NetworkExt};
 
 /// Version of the protocol as appearing in network message headers.
 ///
@@ -100,6 +105,7 @@ impl ServiceFlags {
     /// Add [ServiceFlags] together.
     ///
     /// Returns itself.
+    #[must_use]
     pub fn add(&mut self, other: ServiceFlags) -> ServiceFlags {
         self.0 |= other.0;
         *self
@@ -108,6 +114,7 @@ impl ServiceFlags {
     /// Remove [ServiceFlags] from this.
     ///
     /// Returns itself.
+    #[must_use]
     pub fn remove(&mut self, other: ServiceFlags) -> ServiceFlags {
         self.0 &= !other.0;
         *self
@@ -145,7 +152,7 @@ impl fmt::Display for ServiceFlags {
                     }
                     first = false;
                     write!(f, stringify!($f))?;
-                    flags.remove(ServiceFlags::$f);
+                    let _ = flags.remove(ServiceFlags::$f);
                 }
             };
         }
@@ -183,7 +190,7 @@ impl ops::BitOr for ServiceFlags {
 }
 
 impl ops::BitOrAssign for ServiceFlags {
-    fn bitor_assign(&mut self, rhs: Self) { self.add(rhs); }
+    fn bitor_assign(&mut self, rhs: Self) { let _ = self.add(rhs); }
 }
 
 impl ops::BitXor for ServiceFlags {
@@ -193,7 +200,7 @@ impl ops::BitXor for ServiceFlags {
 }
 
 impl ops::BitXorAssign for ServiceFlags {
-    fn bitxor_assign(&mut self, rhs: Self) { self.remove(rhs); }
+    fn bitxor_assign(&mut self, rhs: Self) { let _ = self.remove(rhs); }
 }
 
 impl Encodable for ServiceFlags {
@@ -235,7 +242,9 @@ impl Magic {
     pub fn to_bytes(self) -> [u8; 4] { self.0 }
 
     /// Returns the magic bytes for the network defined by `params`.
-    pub fn from_params(params: impl AsRef<Params>) -> Self { params.as_ref().network.into() }
+    pub fn from_params(params: impl AsRef<Params>) -> Option<Self> {
+        params.as_ref().network.try_into().ok()
+    }
 }
 
 impl FromStr for Magic {
@@ -249,40 +258,34 @@ impl FromStr for Magic {
     }
 }
 
-macro_rules! generate_network_magic_conversion {
-    ($(Network::$network:ident$((TestnetVersion::$testnet_version:ident))? => Magic::$magic:ident,)*) => {
-        impl From<Network> for Magic {
-            fn from(network: Network) -> Magic {
-                match network {
-                    $(
-                        Network::$network$((TestnetVersion::$testnet_version))? => Magic::$magic,
-                    )*
-                }
-            }
-        }
+impl TryFrom<Network> for Magic {
+    type Error = UnknownNetworkError;
 
-        impl TryFrom<Magic> for Network {
-            type Error = UnknownMagicError;
-
-            fn try_from(magic: Magic) -> Result<Self, Self::Error> {
-                match magic {
-                    $(
-                        Magic::$magic => Ok(Network::$network$((TestnetVersion::$testnet_version))?),
-                    )*
-                    _ => Err(UnknownMagicError(magic)),
-                }
-            }
+    fn try_from(network: Network) -> Result<Self, Self::Error> {
+        match network {
+            Network::Bitcoin => Ok(Magic::BITCOIN),
+            Network::Testnet(TestnetVersion::V3) => Ok(Magic::TESTNET3),
+            Network::Testnet(TestnetVersion::V4) => Ok(Magic::TESTNET4),
+            Network::Signet => Ok(Magic::SIGNET),
+            Network::Regtest => Ok(Magic::REGTEST),
+            _ => Err(UnknownNetworkError(network)),
         }
-    };
+    }
 }
-// Generate conversion functions for all known networks.
-// `Network -> Magic` and `Magic -> Network`
-generate_network_magic_conversion! {
-    Network::Bitcoin => Magic::BITCOIN,
-    Network::Testnet(TestnetVersion::V3) => Magic::TESTNET3,
-    Network::Testnet(TestnetVersion::V4) => Magic::TESTNET4,
-    Network::Signet => Magic::SIGNET,
-    Network::Regtest => Magic::REGTEST,
+
+impl TryFrom<Magic> for Network {
+    type Error = UnknownMagicError;
+
+    fn try_from(magic: Magic) -> Result<Self, Self::Error> {
+        match magic {
+            Magic::BITCOIN => Ok(Network::Bitcoin),
+            Magic::TESTNET3 => Ok(Network::Testnet(TestnetVersion::V3)),
+            Magic::TESTNET4 => Ok(Network::Testnet(TestnetVersion::V4)),
+            Magic::SIGNET => Ok(Network::Signet),
+            Magic::REGTEST => Ok(Network::Regtest),
+            _ => Err(UnknownMagicError(magic)),
+        }
+    }
 }
 
 impl fmt::Display for Magic {
@@ -367,11 +370,10 @@ pub struct ParseMagicError {
 
 impl fmt::Display for ParseMagicError {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        write_err!(f, "failed to parse {} as network magic", self.magic; self.error)
+        write!(f, "failed to parse {} as network magic", self.magic)
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for ParseMagicError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.error) }
 }
@@ -387,14 +389,70 @@ impl fmt::Display for UnknownMagicError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for UnknownMagicError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
+}
+
+/// Error in creating a Magic from a Network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UnknownNetworkError(Network);
+
+impl fmt::Display for UnknownNetworkError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(f, "unknown network {}", self.0)
+    }
+}
+
+impl std::error::Error for UnknownNetworkError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
 
 #[cfg(test)]
 mod tests {
+    use bitcoin::consensus::encode::{deserialize, serialize};
+
     use super::*;
+
+    #[test]
+    fn serialize_deserialize() {
+        assert_eq!(serialize(&Magic::BITCOIN), &[0xf9, 0xbe, 0xb4, 0xd9]);
+        let magic: Magic = Network::Bitcoin.try_into().unwrap();
+        assert_eq!(serialize(&magic), &[0xf9, 0xbe, 0xb4, 0xd9]);
+        assert_eq!(serialize(&Magic::TESTNET3), &[0x0b, 0x11, 0x09, 0x07]);
+        let magic: Magic = Network::Testnet(TestnetVersion::V3).try_into().unwrap();
+        assert_eq!(serialize(&magic), &[0x0b, 0x11, 0x09, 0x07]);
+        assert_eq!(serialize(&Magic::TESTNET4), &[0x1c, 0x16, 0x3f, 0x28]);
+        let magic: Magic = Network::Testnet(TestnetVersion::V4).try_into().unwrap();
+        assert_eq!(serialize(&magic), &[0x1c, 0x16, 0x3f, 0x28]);
+        assert_eq!(serialize(&Magic::SIGNET), &[0x0a, 0x03, 0xcf, 0x40]);
+        let magic: Magic = Network::Signet.try_into().unwrap();
+        assert_eq!(serialize(&magic), &[0x0a, 0x03, 0xcf, 0x40]);
+        assert_eq!(serialize(&Magic::REGTEST), &[0xfa, 0xbf, 0xb5, 0xda]);
+        let magic: Magic = Network::Regtest.try_into().unwrap();
+        assert_eq!(serialize(&magic), &[0xfa, 0xbf, 0xb5, 0xda]);
+
+        assert_eq!(
+            deserialize::<Magic>(&[0xf9, 0xbe, 0xb4, 0xd9]).ok(),
+            Network::Bitcoin.try_into().ok()
+        );
+        assert_eq!(
+            deserialize::<Magic>(&[0x0b, 0x11, 0x09, 0x07]).ok(),
+            Network::Testnet(TestnetVersion::V3).try_into().ok()
+        );
+        assert_eq!(
+            deserialize::<Magic>(&[0x1c, 0x16, 0x3f, 0x28]).ok(),
+            Network::Testnet(TestnetVersion::V4).try_into().ok()
+        );
+        assert_eq!(
+            deserialize::<Magic>(&[0x0a, 0x03, 0xcf, 0x40]).ok(),
+            Network::Signet.try_into().ok()
+        );
+        assert_eq!(
+            deserialize::<Magic>(&[0xfa, 0xbf, 0xb5, 0xda]).ok(),
+            Network::Regtest.try_into().ok()
+        );
+    }
 
     #[test]
     fn service_flags_test() {

@@ -5,6 +5,8 @@
 use core::convert::Infallible;
 use core::fmt;
 
+#[cfg(feature = "arbitrary")]
+use arbitrary::{Arbitrary, Unstructured};
 use NumOpResult as R;
 
 use crate::{Amount, FeeRate, SignedAmount, Weight};
@@ -58,7 +60,7 @@ use crate::{Amount, FeeRate, SignedAmount, Weight};
 /// let a = Amount::from_sat(123).expect("valid amount");
 /// let b = Amount::from_sat(467).expect("valid amount");
 /// // Fee rate for transaction.
-/// let fee_rate = FeeRate::from_sat_per_vb(1).unwrap();
+/// let fee_rate = FeeRate::from_sat_per_vb(1);
 ///
 /// // Somewhat contrived example to show addition operator chained with division.
 /// let max_fee = a + b;
@@ -88,26 +90,8 @@ pub enum NumOpResult<T> {
 }
 
 impl<T> NumOpResult<T> {
-
     /// Maps a `NumOpResult<T>` to `NumOpResult<U>` by applying a function to a
     /// contained [`NumOpResult::Valid`] value, leaving a [`NumOpResult::Error`] value untouched.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bitcoin_units::{FeeRate, Amount, Weight, SignedAmount};
-    ///
-    /// let fee_rate = FeeRate::from_sat_per_vb(1).unwrap();
-    /// let weight = Weight::from_wu(1000);
-    /// let amount = Amount::from_sat_u32(1_000_000);
-    ///
-    /// let amount_after_fee = fee_rate
-    ///     .to_fee(weight) // (1 sat/ 4 wu) * (1000 wu) = 250 sat fee
-    ///     .map(|fee| fee.to_signed())
-    ///     .and_then(|fee| amount.to_signed() - fee);
-    ///
-    /// assert_eq!(amount_after_fee.unwrap(), SignedAmount::from_sat_i32(999_750))
-    /// ```
     #[inline]
     pub fn map<U, F: FnOnce(T) -> U>(self, op: F) -> NumOpResult<U> {
         match self {
@@ -157,6 +141,32 @@ impl<T: fmt::Debug> NumOpResult<T> {
         match self {
             R::Error(e) => e,
             R::Valid(a) => panic!("tried to unwrap a valid numeric result: {:?}", a),
+        }
+    }
+
+    /// Returns the contained Some value or a provided default.
+    ///
+    /// Arguments passed to `unwrap_or` are eagerly evaluated; if you are passing the result of a
+    /// function call, it is recommended to use `unwrap_or_else`, which is lazily evaluated.
+    #[inline]
+    #[track_caller]
+    pub fn unwrap_or(self, default: T) -> T {
+        match self {
+            R::Valid(x) => x,
+            R::Error(_) => default,
+        }
+    }
+
+    /// Returns the contained `Some` value or computes it from a closure.
+    #[inline]
+    #[track_caller]
+    pub fn unwrap_or_else<F>(self, f: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        match self {
+            R::Valid(x) => x,
+            R::Error(_) => f(),
         }
     }
 
@@ -309,5 +319,61 @@ impl fmt::Display for MathOp {
             MathOp::Neg => write!(f, "neg"),
             MathOp::_DoNotUse(infallible) => match infallible {},
         }
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a, T: Arbitrary<'a>> Arbitrary<'a> for NumOpResult<T> {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        match bool::arbitrary(u)? {
+            true => Ok(NumOpResult::Valid(T::arbitrary(u)?)),
+            false => Ok(NumOpResult::Error(NumOpError(MathOp::arbitrary(u)?))),
+        }
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for MathOp {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let choice = u.int_in_range(0..=5)?;
+        match choice {
+            0 => Ok(MathOp::Add),
+            1 => Ok(MathOp::Sub),
+            2 => Ok(MathOp::Mul),
+            3 => Ok(MathOp::Div),
+            4 => Ok(MathOp::Rem),
+            _ => Ok(MathOp::Neg),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::MathOp;
+
+    #[test]
+    fn mathop_predicates() {
+        assert!(MathOp::Add.is_overflow());
+        assert!(MathOp::Sub.is_overflow());
+        assert!(MathOp::Mul.is_overflow());
+        assert!(MathOp::Neg.is_overflow());
+        assert!(!MathOp::Div.is_overflow());
+        assert!(!MathOp::Rem.is_overflow());
+
+        assert!(MathOp::Div.is_div_by_zero());
+        assert!(MathOp::Rem.is_div_by_zero());
+        assert!(!MathOp::Add.is_div_by_zero());
+
+        assert!(MathOp::Add.is_addition());
+        assert!(!MathOp::Sub.is_addition());
+
+        assert!(MathOp::Sub.is_subtraction());
+        assert!(!MathOp::Add.is_subtraction());
+
+        assert!(MathOp::Mul.is_multiplication());
+        assert!(!MathOp::Div.is_multiplication());
+
+        assert!(MathOp::Neg.is_negation());
+        assert!(!MathOp::Add.is_negation());
     }
 }

@@ -18,7 +18,7 @@
 //!
 //! #[derive(Serialize, Deserialize)]
 //! pub struct Foo {
-//!     #[serde(with = "fee_rate::serde::as_sat_per_kwu")]
+//!     #[serde(with = "fee_rate::serde::as_sat_per_kwu_floor")]
 //!     pub fee_rate: FeeRate,
 //! }
 //! ```
@@ -26,21 +26,26 @@
 use core::convert::Infallible;
 use core::fmt;
 
-pub mod as_sat_per_kwu {
+pub mod as_sat_per_kwu_floor {
     //! Serialize and deserialize [`FeeRate`] denominated in satoshis per 1000 weight units.
     //!
     //! Use with `#[serde(with = "fee_rate::serde::as_sat_per_kwu")]`.
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use crate::FeeRate;
+    use crate::{Amount, FeeRate};
 
     pub fn serialize<S: Serializer>(f: &FeeRate, s: S) -> Result<S::Ok, S::Error> {
-        u64::serialize(&f.to_sat_per_kwu(), s)
+        u64::serialize(&f.to_sat_per_kwu_floor(), s)
     }
 
     pub fn deserialize<'d, D: Deserializer<'d>>(d: D) -> Result<FeeRate, D::Error> {
-        Ok(FeeRate::from_sat_per_kwu(u64::deserialize(d)?))
+        let sat = u64::deserialize(d)?;
+        FeeRate::from_per_kwu(
+            Amount::from_sat(sat).map_err(|_| serde::de::Error::custom("amount out of range"))?,
+        )
+        .into_result()
+        .map_err(|_| serde::de::Error::custom("fee rate too big for sats/kwu"))
     }
 
     pub mod opt {
@@ -57,7 +62,7 @@ pub mod as_sat_per_kwu {
         #[allow(clippy::ref_option)] // API forced by serde.
         pub fn serialize<S: Serializer>(f: &Option<FeeRate>, s: S) -> Result<S::Ok, S::Error> {
             match *f {
-                Some(f) => s.serialize_some(&f.to_sat_per_kwu()),
+                Some(f) => s.serialize_some(&f.to_sat_per_kwu_floor()),
                 None => s.serialize_none(),
             }
         }
@@ -99,8 +104,7 @@ pub mod as_sat_per_vb_floor {
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use crate::fee_rate::serde::OverflowError;
-    use crate::fee_rate::FeeRate;
+    use crate::{Amount, FeeRate};
 
     pub fn serialize<S: Serializer>(f: &FeeRate, s: S) -> Result<S::Ok, S::Error> {
         u64::serialize(&f.to_sat_per_vb_floor(), s)
@@ -108,9 +112,12 @@ pub mod as_sat_per_vb_floor {
 
     // Errors on overflow.
     pub fn deserialize<'d, D: Deserializer<'d>>(d: D) -> Result<FeeRate, D::Error> {
-        FeeRate::from_sat_per_vb(u64::deserialize(d)?)
-            .ok_or(OverflowError)
-            .map_err(serde::de::Error::custom)
+        let sat = u64::deserialize(d)?;
+        FeeRate::from_per_vb(
+            Amount::from_sat(sat).map_err(|_| serde::de::Error::custom("amount out of range"))?,
+        )
+        .into_result()
+        .map_err(|_| serde::de::Error::custom("fee rate too big for sats/vb"))
     }
 
     pub mod opt {
@@ -170,8 +177,7 @@ pub mod as_sat_per_vb_ceil {
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use crate::fee_rate::serde::OverflowError;
-    use crate::fee_rate::FeeRate;
+    use crate::{Amount, FeeRate};
 
     pub fn serialize<S: Serializer>(f: &FeeRate, s: S) -> Result<S::Ok, S::Error> {
         u64::serialize(&f.to_sat_per_vb_ceil(), s)
@@ -179,9 +185,12 @@ pub mod as_sat_per_vb_ceil {
 
     // Errors on overflow.
     pub fn deserialize<'d, D: Deserializer<'d>>(d: D) -> Result<FeeRate, D::Error> {
-        FeeRate::from_sat_per_vb(u64::deserialize(d)?)
-            .ok_or(OverflowError)
-            .map_err(serde::de::Error::custom)
+        let sat = u64::deserialize(d)?;
+        FeeRate::from_per_vb(
+            Amount::from_sat(sat).map_err(|_| serde::de::Error::custom("amount out of range"))?,
+        )
+        .into_result()
+        .map_err(|_| serde::de::Error::custom("fee rate too big for sats/vb"))
     }
 
     pub mod opt {

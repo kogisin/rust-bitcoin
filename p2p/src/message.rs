@@ -5,21 +5,23 @@
 //! This module defines the `NetworkMessage` and `RawNetworkMessage` types that
 //! are used for (de)serializing Bitcoin objects for transmission on the network.
 
-use core::{fmt, iter};
+use core::fmt;
+use std::borrow::{Cow, ToOwned};
+use std::boxed::Box;
 
+use bitcoin::consensus::encode::{self, CheckedData, Decodable, Encodable, ReadExt, WriteExt};
+use bitcoin::merkle_tree::MerkleBlock;
+use bitcoin::{block, transaction};
 use hashes::sha256d;
 use internals::ToU64 as _;
 use io::{BufRead, Write};
 
-use crate::consensus::encode::{self, CheckedData, Decodable, Encodable, ReadExt, WriteExt};
-use crate::merkle_tree::MerkleBlock;
-use crate::p2p::address::{AddrV2Message, Address};
-use crate::p2p::{
+use crate::address::{AddrV2Message, Address};
+use crate::consensus::{impl_consensus_encoding, impl_vec_wrapper};
+use crate::{
     message_blockdata, message_bloom, message_compact_blocks, message_filter, message_network,
     Magic,
 };
-use crate::prelude::{Box, Cow, String, ToOwned, Vec};
-use crate::{block, consensus, transaction};
 
 /// The maximum number of [super::message_blockdata::Inventory] items in an `inv` message.
 ///
@@ -112,14 +114,15 @@ impl Decodable for CommandString {
     #[inline]
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
         let rawbytes: [u8; 12] = Decodable::consensus_decode(r)?;
-        let rv = iter::FromIterator::from_iter(rawbytes.iter().filter_map(|&u| {
-            if u > 0 {
-                Some(u as char)
-            } else {
-                None
-            }
-        }));
-        Ok(CommandString(rv))
+
+        // Find the last non-null byte and trim null padding from the end
+        let trimmed = &rawbytes[..rawbytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1)];
+
+        if !trimmed.is_ascii() {
+            return Err(crate::consensus::parse_failed_error("Command string must be ASCII"));
+        }
+
+        Ok(CommandString(Cow::Owned(unsafe { String::from_utf8_unchecked(trimmed.to_vec()) })))
     }
 }
 
@@ -143,7 +146,6 @@ impl fmt::Display for CommandStringError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for CommandStringError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
@@ -157,11 +159,42 @@ pub struct RawNetworkMessage {
     checksum: [u8; 4],
 }
 
+/// A v1 message header used to describe the incoming payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct V1MessageHeader {
+    /// The network magic, a unique 4 byte sequence.
+    pub magic: Magic,
+    /// The "command" used to describe the payload.
+    pub command: CommandString,
+    /// The length of the payload.
+    pub length: u32,
+    /// A checksum to the afformentioned data.
+    pub checksum: [u8; 4],
+}
+
+impl_consensus_encoding!(V1MessageHeader, magic, command, length, checksum);
+
 /// A Network message using the v2 p2p protocol defined in BIP324.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V2NetworkMessage {
     payload: NetworkMessage,
 }
+
+/// A list of inventory items.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct InventoryPayload(pub Vec<message_blockdata::Inventory>);
+
+/// A list of legacy p2p address messages.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AddrPayload(pub Vec<(u32, Address)>);
+
+/// A list of v2 address messages.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AddrV2Payload(pub Vec<AddrV2Message>);
+
+impl_vec_wrapper!(InventoryPayload, message_blockdata::Inventory);
+impl_vec_wrapper!(AddrPayload, (u32, Address));
+impl_vec_wrapper!(AddrV2Payload, AddrV2Message);
 
 /// A Network message payload. Proper documentation is available on at
 /// [Bitcoin Wiki: Protocol Specification](https://en.bitcoin.it/wiki/Protocol_specification)
@@ -172,13 +205,13 @@ pub enum NetworkMessage {
     /// `verack`
     Verack,
     /// `addr`
-    Addr(Vec<(u32, Address)>),
+    Addr(AddrPayload),
     /// `inv`
-    Inv(Vec<message_blockdata::Inventory>),
+    Inv(InventoryPayload),
     /// `getdata`
-    GetData(Vec<message_blockdata::Inventory>),
+    GetData(InventoryPayload),
     /// `notfound`
-    NotFound(Vec<message_blockdata::Inventory>),
+    NotFound(InventoryPayload),
     /// `getblocks`
     GetBlocks(message_blockdata::GetBlocksMessage),
     /// `getheaders`
@@ -228,7 +261,7 @@ pub enum NetworkMessage {
     /// BIP152 blocktxn
     BlockTxn(message_compact_blocks::BlockTxn),
     /// `alert`
-    Alert(Vec<u8>),
+    Alert(message_network::Alert),
     /// `reject`
     Reject(message_network::Reject),
     /// `feefilter`
@@ -236,7 +269,7 @@ pub enum NetworkMessage {
     /// `wtxidrelay`
     WtxidRelay,
     /// `addrv2`
-    AddrV2(Vec<AddrV2Message>),
+    AddrV2(AddrV2Payload),
     /// `sendaddrv2`
     SendAddrV2,
 
@@ -501,7 +534,7 @@ impl Decodable for HeaderDeserializationWrapper {
         for _ in 0..len {
             ret.push(Decodable::consensus_decode(r)?);
             if u8::consensus_decode(r)? != 0u8 {
-                return Err(consensus::parse_failed_error(
+                return Err(crate::consensus::parse_failed_error(
                     "Headers message should not contain transactions",
                 ));
             }
@@ -697,25 +730,25 @@ impl Decodable for V2NetworkMessage {
 mod test {
     use std::net::Ipv4Addr;
 
+    use bitcoin::bip152::BlockTransactionsRequest;
+    use bitcoin::bip158::{FilterHash, FilterHeader};
+    use bitcoin::block::{Block, BlockHash};
+    use bitcoin::consensus::encode::{deserialize, deserialize_partial, serialize};
+    use bitcoin::script::ScriptBuf;
+    use bitcoin::transaction::{Transaction, Txid};
     use hex_lit::hex;
     use units::BlockHeight;
 
     use super::*;
-    use crate::bip152::BlockTransactionsRequest;
-    use crate::bip158::{FilterHash, FilterHeader};
-    use crate::block::{Block, BlockHash};
-    use crate::consensus::encode::{deserialize, deserialize_partial, serialize};
-    use crate::p2p::address::AddrV2;
-    use crate::p2p::message_blockdata::{GetBlocksMessage, GetHeadersMessage, Inventory};
-    use crate::p2p::message_bloom::{BloomFlags, FilterAdd, FilterLoad};
-    use crate::p2p::message_compact_blocks::{GetBlockTxn, SendCmpct};
-    use crate::p2p::message_filter::{
+    use crate::address::AddrV2;
+    use crate::message_blockdata::{GetBlocksMessage, GetHeadersMessage, Inventory};
+    use crate::message_bloom::{BloomFlags, FilterAdd, FilterLoad};
+    use crate::message_compact_blocks::{GetBlockTxn, SendCmpct};
+    use crate::message_filter::{
         CFCheckpt, CFHeaders, CFilter, GetCFCheckpt, GetCFHeaders, GetCFilters,
     };
-    use crate::p2p::message_network::{Reject, RejectReason, VersionMessage};
-    use crate::p2p::ServiceFlags;
-    use crate::script::ScriptBuf;
-    use crate::transaction::{Transaction, Txid};
+    use crate::message_network::{Alert, Reject, RejectReason, VersionMessage};
+    use crate::ServiceFlags;
 
     fn hash(array: [u8; 32]) -> sha256d::Hash { sha256d::Hash::from_byte_array(array) }
 
@@ -723,7 +756,7 @@ mod test {
     fn full_round_ser_der_raw_network_message() {
         let version_msg: VersionMessage = deserialize(&hex!("721101000100000000000000e6e0845300000000010000000000000000000000000000000000ffff0000000000000100000000000000fd87d87eeb4364f22cf54dca59412db7208d47d920cffce83ee8102f5361746f7368693a302e392e39392f2c9f040001")).unwrap();
         let tx: Transaction = deserialize(&hex!("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000")).unwrap();
-        let block: Block = deserialize(&include_bytes!("../../tests/data/testnet_block_000000000000045e0b1660b6445b5e5c5ab63c9a4f956be7e1e69be04fa4497b.raw")[..]).unwrap();
+        let block: Block = deserialize(&hex!("00608e2e094d41aecfbcbf8fe70cb60be57516b07db1bafee4c4de5dad760000000000004aec16eab3be95abe9c54e01cf850c14b8c5cad1bc6b2e73e811db5d5998ada404503e66fcff031b4ebd99d701010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff3402983a000404503e6604f1f617271083bc3d6600000000000000000007bb1b0a636b706f6f6c0d506f72746c616e642e484f444cffffffff0200f2052a010000001976a9142ce72b25fe97b52638c199acfaa5e3891ddfed5b88ac0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000")).unwrap();
         let header: block::Header = deserialize(&hex!("010000004ddccd549d28f385ab457e98d1b11ce80bfea2c5ab93015ade4973e400000000bf4473e53794beae34e64fccc471dace6ae544180816f89591894e0f417a914cd74d6e49ffff001d323b3a7b")).unwrap();
         let script: ScriptBuf =
             deserialize(&hex!("1976a91431a420903c05a0a7de2de40c9f02ebedbacdc17288ac")).unwrap();
@@ -734,17 +767,17 @@ mod test {
         let msgs = [
             NetworkMessage::Version(version_msg),
             NetworkMessage::Verack,
-            NetworkMessage::Addr(vec![(
+            NetworkMessage::Addr(AddrPayload(vec![(
                 45,
                 Address::new(&([123, 255, 000, 100], 833).into(), ServiceFlags::NETWORK),
-            )]),
-            NetworkMessage::Inv(vec![Inventory::Block(BlockHash::from_byte_array(
-                hash([8u8; 32]).to_byte_array(),
-            ))]),
-            NetworkMessage::GetData(vec![Inventory::Transaction(Txid::from_byte_array(
-                hash([45u8; 32]).to_byte_array(),
-            ))]),
-            NetworkMessage::NotFound(vec![Inventory::Error([0u8; 32])]),
+            )])),
+            NetworkMessage::Inv(InventoryPayload(vec![Inventory::Block(
+                BlockHash::from_byte_array(hash([8u8; 32]).to_byte_array()),
+            )])),
+            NetworkMessage::GetData(InventoryPayload(vec![Inventory::Transaction(
+                Txid::from_byte_array(hash([45u8; 32]).to_byte_array()),
+            )])),
+            NetworkMessage::NotFound(InventoryPayload(vec![Inventory::Error([0u8; 32])])),
             NetworkMessage::GetBlocks(GetBlocksMessage::new(
                 vec![
                     BlockHash::from_byte_array(hash([1u8; 32]).to_byte_array()),
@@ -817,7 +850,7 @@ mod test {
                     FilterHeader::from_byte_array(hash([99u8; 32]).to_byte_array()),
                 ],
             }),
-            NetworkMessage::Alert(vec![45, 66, 3, 2, 6, 8, 9, 12, 3, 130]),
+            NetworkMessage::Alert(Alert::final_alert()),
             NetworkMessage::Reject(Reject {
                 message: "Test reject".into(),
                 ccode: RejectReason::Duplicate,
@@ -826,12 +859,12 @@ mod test {
             }),
             NetworkMessage::FeeFilter(1000),
             NetworkMessage::WtxidRelay,
-            NetworkMessage::AddrV2(vec![AddrV2Message {
+            NetworkMessage::AddrV2(AddrV2Payload(vec![AddrV2Message {
                 addr: AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)),
                 port: 0,
                 services: ServiceFlags::NONE,
                 time: 0,
-            }]),
+            }])),
             NetworkMessage::SendAddrV2,
             NetworkMessage::CmpctBlock(cmptblock),
             NetworkMessage::GetBlockTxn(GetBlockTxn {
@@ -875,9 +908,24 @@ mod test {
         assert_eq!(cs.as_ref().unwrap().to_string(), "Andrew".to_owned());
         assert_eq!(cs.unwrap(), CommandString::try_from_static("Andrew").unwrap());
 
-        let short_cs: Result<CommandString, _> =
-            deserialize(&[0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0]);
-        assert!(short_cs.is_err());
+        // Test that embedded null bytes are preserved while trailing nulls are trimmed
+        let cs: Result<CommandString, _> =
+            deserialize(&[0, 0x41u8, 0x6e, 0x64, 0, 0x72, 0x65, 0x77, 0, 0, 0, 0]);
+        assert!(cs.is_ok());
+        assert_eq!(cs.as_ref().unwrap().to_string(), "\0And\0rew".to_owned());
+        assert_eq!(cs.unwrap(), CommandString::try_from_static("\0And\0rew").unwrap());
+
+        // Invalid CommandString, must be ASCII
+        assert!(deserialize::<CommandString>(&[
+            0, 0x41u8, 0x6e, 0xa4, 0, 0x72, 0x65, 0x77, 0, 0, 0, 0
+        ])
+        .is_err());
+
+        // Invalid CommandString, must be 12 bytes
+        assert!(deserialize::<CommandString>(&[
+            0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0
+        ])
+        .is_err());
     }
 
     #[test]

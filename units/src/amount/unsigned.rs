@@ -9,12 +9,14 @@ use core::{default, fmt};
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+use NumOpResult as R;
 
 use super::error::{ParseAmountErrorInner, ParseErrorInner};
 use super::{
     parse_signed_to_satoshi, split_amount_and_denomination, Denomination, Display, DisplayStyle,
     OutOfRangeError, ParseAmountError, ParseError, SignedAmount,
 };
+use crate::{FeeRate, MathOp, NumOpError as E, NumOpResult, Weight};
 
 mod encapsulate {
     use super::OutOfRangeError;
@@ -112,6 +114,7 @@ impl Amount {
     ///
     /// Accepts an `u32` which is guaranteed to be in range for the type, but which can only
     /// represent roughly 0 to 42.95 BTC.
+    #[allow(clippy::missing_panics_doc)]
     pub const fn from_sat_u32(satoshi: u32) -> Self {
         let sats = satoshi as u64; // cannot use i64::from in a constfn
         match Self::from_sat(sats) {
@@ -401,6 +404,101 @@ impl Amount {
     pub fn to_signed(self) -> SignedAmount {
         SignedAmount::from_sat(self.to_sat() as i64) // Cast ok, signed amount and amount share positive range.
             .expect("range of Amount is within range of SignedAmount")
+    }
+
+    /// Checked weight floor division.
+    ///
+    /// Be aware that integer division loses the remainder if no exact division
+    /// can be made. See also [`Self::div_by_weight_ceil`].
+    pub const fn div_by_weight_floor(self, weight: Weight) -> NumOpResult<FeeRate> {
+        let wu = weight.to_wu();
+
+        // Mul by 1,000 because we use per/kwu.
+        if let Some(sats) = self.to_sat().checked_mul(1_000) {
+            match sats.checked_div(wu) {
+                Some(fee_rate) =>
+                    if let Ok(amount) = Amount::from_sat(fee_rate) {
+                        return FeeRate::from_per_kwu(amount);
+                    },
+                None => return R::Error(E::while_doing(MathOp::Div)),
+            }
+        }
+        // Use `MathOp::Mul` because `Div` implies div by zero.
+        R::Error(E::while_doing(MathOp::Mul))
+    }
+
+    /// Checked weight ceiling division.
+    ///
+    /// Be aware that integer division loses the remainder if no exact division
+    /// can be made. This method rounds up ensuring the transaction fee rate is
+    /// sufficient. See also [`Self::div_by_weight_floor`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bitcoin_units::{amount, Amount, FeeRate, Weight};
+    /// let amount = Amount::from_sat(10)?;
+    /// let weight = Weight::from_wu(300);
+    /// let fee_rate = amount.div_by_weight_ceil(weight).expect("valid fee rate");
+    /// assert_eq!(fee_rate, FeeRate::from_sat_per_kwu(34));
+    /// # Ok::<_, amount::OutOfRangeError>(())
+    /// ```
+    pub const fn div_by_weight_ceil(self, weight: Weight) -> NumOpResult<FeeRate> {
+        let wu = weight.to_wu();
+        if wu == 0 {
+            return R::Error(E::while_doing(MathOp::Div));
+        }
+
+        // Mul by 1,000 because we use per/kwu.
+        if let Some(sats) = self.to_sat().checked_mul(1_000) {
+            // No need to used checked arithmetic because wu is non-zero.
+            if let Some(bump) = sats.checked_add(wu - 1) {
+                let fee_rate = bump / wu;
+                if let Ok(amount) = Amount::from_sat(fee_rate) {
+                    return FeeRate::from_per_kwu(amount);
+                }
+            }
+        }
+        // Use `MathOp::Mul` because `Div` implies div by zero.
+        R::Error(E::while_doing(MathOp::Mul))
+    }
+
+    /// Checked fee rate floor division.
+    ///
+    /// Computes the maximum weight that would result in a fee less than or equal to this amount
+    /// at the given `fee_rate`. Uses floor division to ensure the resulting weight doesn't cause
+    /// the fee to exceed the amount.
+    pub const fn div_by_fee_rate_floor(self, fee_rate: FeeRate) -> NumOpResult<Weight> {
+        debug_assert!(Amount::MAX.to_sat().checked_mul(1_000).is_some());
+        let msats = self.to_sat() * 1_000;
+        match msats.checked_div(fee_rate.to_sat_per_kwu_ceil()) {
+            Some(wu) => R::Valid(Weight::from_wu(wu)),
+            None => R::Error(E::while_doing(MathOp::Div)),
+        }
+    }
+
+    /// Checked fee rate ceiling division.
+    ///
+    /// Computes the minimum weight that would result in a fee greater than or equal to this amount
+    /// at the given `fee_rate`. Uses ceiling division to ensure the resulting weight is sufficient.
+    pub const fn div_by_fee_rate_ceil(self, fee_rate: FeeRate) -> NumOpResult<Weight> {
+        // Use ceil because result is used as the divisor.
+        let rate = fee_rate.to_sat_per_kwu_ceil();
+        // Early return so we do not have to use checked arithmetic below.
+        if rate == 0 {
+            return R::Error(E::while_doing(MathOp::Div));
+        }
+
+        debug_assert!(Amount::MAX.to_sat().checked_mul(1_000).is_some());
+        let msats = self.to_sat() * 1_000;
+        match msats.checked_add(rate - 1) {
+            Some(bump) => {
+                let wu = bump / rate;
+                NumOpResult::Valid(Weight::from_wu(wu))
+            }
+            // Use `MathOp::Add` because `Div` implies div by zero.
+            None => R::Error(E::while_doing(MathOp::Add)),
+        }
     }
 }
 

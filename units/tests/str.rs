@@ -4,7 +4,7 @@
 
 use bitcoin_units::amount::Denomination;
 use bitcoin_units::locktime::{absolute, relative};
-use bitcoin_units::{Amount, BlockHeight, BlockInterval, FeeRate, SignedAmount, Weight};
+use bitcoin_units::{Amount, BlockHeight, BlockInterval, SignedAmount, Weight};
 
 macro_rules! check {
     ($($test_name:ident, $ty:path, $val:path, $str:literal);* $(;)?) => {
@@ -37,21 +37,17 @@ check! {
     block_interval_min, BlockInterval, BlockInterval::MIN, "0";
     block_interval_max, BlockInterval, BlockInterval::MAX, "4294967295";
 
-    fee_rate_min, FeeRate, FeeRate::MIN, "0";
-    fee_rate_max, FeeRate, FeeRate::MAX, "18446744073709551615";
-    fee_rate_dust, FeeRate, FeeRate::DUST, "750";
-
     lock_by_height_absolute_min, absolute::Height, absolute::Height::MIN, "0";
     lock_by_height_absolute_max, absolute::Height, absolute::Height::MAX, "499999999";
 
-    lock_by_height_relative_min, relative::Height, relative::Height::MIN, "0";
-    lock_by_height_relative_max, relative::Height, relative::Height::MAX, "65535";
+    lock_by_height_relative_min, relative::NumberOfBlocks, relative::NumberOfBlocks::MIN, "0";
+    lock_by_height_relative_max, relative::NumberOfBlocks, relative::NumberOfBlocks::MAX, "65535";
 
-    lock_by_time_absolute_min, absolute::Time, absolute::Time::MIN, "500000000";
-    lock_by_time_absolute_max, absolute::Time, absolute::Time::MAX, "4294967295";
+    lock_by_time_absolute_min, absolute::MedianTimePast, absolute::MedianTimePast::MIN, "500000000";
+    lock_by_time_absolute_max, absolute::MedianTimePast, absolute::MedianTimePast::MAX, "4294967295";
 
-    lock_by_time_relative_min, relative::Time, relative::Time::MIN, "0";
-    lock_by_time_relative_max, relative::Time, relative::Time::MAX, "65535";
+    lock_by_time_relative_min, relative::NumberOf512Seconds, relative::NumberOf512Seconds::MIN, "0";
+    lock_by_time_relative_max, relative::NumberOf512Seconds, relative::NumberOf512Seconds::MAX, "65535";
 
     weight_min, Weight, Weight::MIN, "0";
     weight_max, Weight, Weight::MAX, "18446744073709551615";

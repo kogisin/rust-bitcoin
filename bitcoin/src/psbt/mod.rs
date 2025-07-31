@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use internals::write_err;
 use secp256k1::{Keypair, Message, Secp256k1, Signing, Verification};
 
-use crate::bip32::{self, DerivationPath, KeySource, Xpriv, Xpub};
+use crate::bip32::{self, KeySource, Xpriv, Xpub};
 use crate::crypto::key::{PrivateKey, PublicKey};
 use crate::crypto::{ecdsa, taproot};
 use crate::key::{TapTweak, XOnlyPublicKey};
@@ -40,7 +40,6 @@ pub use self::{
 
 /// A Partially Signed Transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Psbt {
     /// The unsigned transaction, scriptSigs and witnesses for each input must be empty.
     pub unsigned_tx: Transaction,
@@ -50,10 +49,8 @@ pub struct Psbt {
     /// derivation path as defined by BIP 32.
     pub xpub: BTreeMap<Xpub, KeySource>,
     /// Global proprietary key-value pairs.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>>,
     /// Unknown global key-value pairs.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub unknown: BTreeMap<raw::Key, Vec<u8>>,
 
     /// The corresponding key-value map for each input in the unsigned transaction.
@@ -130,7 +127,7 @@ impl Psbt {
     /// 1000 sats/vByte. 25k sats/vByte is obviously a mistake at this point.
     ///
     /// [`extract_tx`]: Psbt::extract_tx
-    pub const DEFAULT_MAX_FEE_RATE: FeeRate = FeeRate::from_sat_per_vb_unchecked(25_000);
+    pub const DEFAULT_MAX_FEE_RATE: FeeRate = FeeRate::from_sat_per_vb(25_000);
 
     /// An alias for [`extract_tx_fee_rate_limit`].
     ///
@@ -208,15 +205,12 @@ impl Psbt {
         // Note: Move prevents usage of &self from now on.
         let tx = self.internal_extract_tx();
 
-        // Now that the extracted Transaction is made, decide how to return it.
-        let fee_rate =
-            FeeRate::from_sat_per_kwu(fee.to_sat().saturating_mul(1000) / tx.weight().to_wu());
-        // Prefer to return an AbsurdFeeRate error when both trigger.
+        let fee_rate = (fee / tx.weight()).unwrap_or(FeeRate::MAX);
         if fee_rate > max_fee_rate {
-            return Err(ExtractTxError::AbsurdFeeRate { fee_rate, tx });
+            Err(ExtractTxError::AbsurdFeeRate { fee_rate, tx })
+        } else {
+            Ok(tx)
         }
-
-        Ok(tx)
     }
 
     /// Combines this [`Psbt`] with `other` PSBT as described by BIP 174.
@@ -731,6 +725,51 @@ impl Psbt {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for Psbt {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::prelude::ToString;
+
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_string())
+        } else {
+            serializer.serialize_bytes(&self.serialize())
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Psbt {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Psbt;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                write!(f, "a psbt")
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+                Psbt::deserialize(bytes).map_err(|e| serde::de::Error::custom(e))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Self::Value, E> {
+                s.parse().map_err(|e| serde::de::Error::custom(e))
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(Visitor)
+        } else {
+            deserializer.deserialize_bytes(Visitor)
+        }
+    }
+}
+
 /// Data required to call [`GetKey`] to get the private key to sign an input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -775,14 +814,13 @@ impl GetKey for Xpriv {
             KeyRequest::XOnlyPubkey(_) => Err(GetKeyError::NotSupported),
             KeyRequest::Bip32((fingerprint, path)) => {
                 let key = if self.fingerprint(secp) == *fingerprint {
-                    let k = self.derive_xpriv(secp, &path).map_err(GetKeyError::Bip32)?;
+                    let k = self.derive_xpriv(secp, path).map_err(GetKeyError::Bip32)?;
                     Some(k.to_private_key())
                 } else if self.parent_fingerprint == *fingerprint
                     && !path.is_empty()
                     && path[0] == self.child_number
                 {
-                    let path = DerivationPath::from_iter(path.into_iter().skip(1).copied());
-                    let k = self.derive_xpriv(secp, &path).map_err(GetKeyError::Bip32)?;
+                    let k = self.derive_xpriv(secp, &path[1..]).map_err(GetKeyError::Bip32)?;
                     Some(k.to_private_key())
                 } else {
                     None
@@ -852,11 +890,11 @@ impl GetKey for $map<PublicKey, PrivateKey> {
             KeyRequest::XOnlyPubkey(xonly) => {
                 let pubkey_even = xonly.public_key(secp256k1::Parity::Even);
                 let key = self.get(&pubkey_even).cloned();
-                
+
                 if key.is_some() {
                     return Ok(key);
                 }
-                
+
                 let pubkey_odd = xonly.public_key(secp256k1::Parity::Odd);
                 if let Some(priv_key) = self.get(&pubkey_odd).copied() {
                     let negated_priv_key  = priv_key.negate();
@@ -889,18 +927,18 @@ impl GetKey for $map<XOnlyPublicKey, PrivateKey> {
             KeyRequest::XOnlyPubkey(xonly) => Ok(self.get(xonly).cloned()),
             KeyRequest::Pubkey(pk) => {
                 let (xonly, parity) = pk.inner.x_only_public_key();
-                
+
                 if let Some(mut priv_key) = self.get(&XOnlyPublicKey::from(xonly)).cloned() {
                     let computed_pk = priv_key.public_key(&secp);
                     let (_, computed_parity) = computed_pk.inner.x_only_public_key();
-                    
+
                     if computed_parity != parity {
                         priv_key = priv_key.negate();
                     }
-                    
+
                     return Ok(Some(priv_key));
                 }
-                
+
                 Ok(None)
             },
             KeyRequest::Bip32(_) => Err(GetKeyError::NotSupported),
@@ -1132,8 +1170,11 @@ impl fmt::Display for ExtractTxError {
         use ExtractTxError::*;
 
         match *self {
-            AbsurdFeeRate { fee_rate, .. } =>
-                write!(f, "an absurdly high fee rate of {}", fee_rate),
+            AbsurdFeeRate { fee_rate, .. } => write!(
+                f,
+                "an absurdly high fee rate of {} sat/kwu",
+                fee_rate.to_sat_per_kwu_floor()
+            ),
             MissingInputValue { .. } => write!(
                 f,
                 "one of the inputs lacked value information (witness_utxo or non_witness_utxo)"
@@ -1280,13 +1321,14 @@ pub use self::display_from_str::PsbtParseError;
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use hashes::{hash160, ripemd160, sha256};
     use hex::FromHex;
     use hex_lit::hex;
     #[cfg(feature = "rand-std")]
     use {
-        crate::address::script_pubkey::ScriptBufExt as _,
-        crate::bip32::{DerivationPath, Fingerprint},
+        crate::bip32::Fingerprint,
         crate::locktime,
         crate::witness_version::WitnessVersion,
         crate::WitnessProgram,
@@ -1294,8 +1336,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::address::script_pubkey::ScriptExt as _;
-    use crate::bip32::ChildNumber;
+    use crate::bip32::{ChildNumber, DerivationPath};
     use crate::locktime::absolute;
     use crate::network::NetworkKind;
     use crate::psbt::serialize::{Deserialize, Serialize};
@@ -1387,33 +1428,43 @@ mod tests {
 
     #[test]
     fn psbt_high_fee_checks() {
-        let psbt = psbt_with_values(5_000_000_000_000, 1000);
+        let psbt = psbt_with_values(Amount::MAX.to_sat(), 1000);
+
+        // We cannot create an expected fee rate to test against because `FeeRate::from_sat_per_mvb` is private.
+        // Large fee rate errors if we pass in 1 sat/vb so just use this to get the error fee rate returned.
+        let error_fee_rate = psbt
+            .clone()
+            .extract_tx_with_fee_rate_limit(FeeRate::from_sat_per_vb(1))
+            .map_err(|e| match e {
+                ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
+                _ => panic!(""),
+            })
+            .unwrap_err();
+
+        // In `internal_extract_tx_with_fee_rate_limit` when we do fee / weight
+        // we manually saturate to `FeeRate::MAX`.
+        assert!(psbt.clone().extract_tx_with_fee_rate_limit(FeeRate::MAX).is_ok());
+
+        // These error because the fee rate is above the limit as expected.
         assert_eq!(
             psbt.clone().extract_tx().map_err(|e| match e {
                 ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
                 _ => panic!(""),
             }),
-            Err(FeeRate::from_sat_per_kwu(15060240960843))
+            Err(error_fee_rate)
         );
         assert_eq!(
             psbt.clone().extract_tx_fee_rate_limit().map_err(|e| match e {
                 ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
                 _ => panic!(""),
             }),
-            Err(FeeRate::from_sat_per_kwu(15060240960843))
+            Err(error_fee_rate)
         );
-        assert_eq!(
-            psbt.clone()
-                .extract_tx_with_fee_rate_limit(FeeRate::from_sat_per_kwu(15060240960842))
-                .map_err(|e| match e {
-                    ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
-                    _ => panic!(""),
-                }),
-            Err(FeeRate::from_sat_per_kwu(15060240960843))
-        );
-        assert!(psbt
-            .extract_tx_with_fee_rate_limit(FeeRate::from_sat_per_kwu(15060240960843))
-            .is_ok());
+
+        // No one is using an ~50 BTC fee so if we can handle this
+        // then the `FeeRate` restrictions are fine for PSBT usage.
+        let psbt = psbt_with_values(Amount::from_btc_u16(50).to_sat(), 1000); // fee = 50 BTC - 1000 sats
+        assert!(psbt.extract_tx_with_fee_rate_limit(FeeRate::MAX).is_ok());
 
         // Testing that extract_tx will error at 25k sat/vbyte (6250000 sat/kwu)
         assert_eq!(
@@ -1581,7 +1632,7 @@ mod tests {
             }],
         };
         let unknown: BTreeMap<raw::Key, Vec<u8>> =
-            vec![(raw::Key { type_value: 1, key_data: vec![0, 1] }, vec![3, 4, 5])]
+            vec![(raw::Key { type_value: 42, key_data: vec![0, 1] }, vec![3, 4, 5])]
                 .into_iter()
                 .collect();
         let key_source = ("deadbeef".parse().unwrap(), "0'/1".parse().unwrap());
@@ -1613,6 +1664,7 @@ mod tests {
             },
             unsigned_tx: {
                 let mut unsigned = tx.clone();
+                unsigned.input[0].previous_output.txid = tx.compute_txid();
                 unsigned.input[0].script_sig = ScriptBuf::new();
                 unsigned.input[0].witness = Witness::default();
                 unsigned
@@ -1636,10 +1688,10 @@ mod tests {
                     )].into_iter().collect(),
                     bip32_derivation: keypaths.clone(),
                     final_script_witness: Some(Witness::from_slice(&[vec![1, 3], vec![5]])),
-                    ripemd160_preimages: vec![(ripemd160::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
-                    sha256_preimages: vec![(sha256::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
-                    hash160_preimages: vec![(hash160::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
-                    hash256_preimages: vec![(sha256d::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
+                    ripemd160_preimages: vec![(ripemd160::Hash::hash(&[1, 2]), vec![1, 2])].into_iter().collect(),
+                    sha256_preimages: vec![(sha256::Hash::hash(&[1, 2]), vec![1, 2])].into_iter().collect(),
+                    hash160_preimages: vec![(hash160::Hash::hash(&[1, 2]), vec![1, 2])].into_iter().collect(),
+                    hash256_preimages: vec![(sha256d::Hash::hash(&[1, 2]), vec![1, 2])].into_iter().collect(),
                     proprietary: proprietary.clone(),
                     unknown: unknown.clone(),
                     ..Default::default()
@@ -2059,6 +2111,28 @@ mod tests {
     }
 
     #[test]
+    fn invalid_vector_4617() {
+        let err = hex_psbt("70736274ff01007374ff0103010000000000000000002e2873007374ff0107736205000000000000000000000000000000000006060005feffffff74ff01000a000000000000002cc760008530b38dac0100030500000074ff01070100000000000000000000000000c0316888e006000600050000736274ff00d90001007374ff41030100000000000a0a06002e2873007374ff01070100000000000000000000000000000000ff0000060600050000736274ff01000a0080000000000024c7600005193b1e400700030500000074ff0107010000000000a9c7df3f07000570ed62c76004c3ca95c5f90200010742420a0a000000000000").unwrap_err();
+        match err {
+            Error::IncorrectNonWitnessUtxo { index: 0, input_outpoint, non_witness_utxo_txid } => {
+                assert_eq!(
+                    input_outpoint,
+                    "00000000000000000000000562730701ff74730073282e000000000000000000:0"
+                        .parse()
+                        .unwrap(),
+                );
+                assert_eq!(
+                    non_witness_utxo_txid,
+                    "9ed45fd3f73b038649bee6e763dbd70868745c48a0d2b0299f42c68f957995f4"
+                        .parse()
+                        .unwrap(),
+                );
+            }
+            _ => panic!("expected output hash mismatch error, got {}", err),
+        }
+    }
+
+    #[test]
     fn serialize_and_deserialize_preimage_psbt() {
         // create a sha preimage map
         let mut sha256_preimages = BTreeMap::new();
@@ -2184,6 +2258,67 @@ mod tests {
         assert!(!rtt.proprietary.is_empty());
     }
 
+    // Deserialize MuSig2 PSBT participant keys according to BIP-373
+    #[test]
+    fn serialize_and_deserialize_musig2_participants() {
+        // XXX: Does not cover PSBT_IN_MUSIG2_PUB_NONCE, PSBT_IN_MUSIG2_PARTIAL_SIG (yet)
+
+        let expected_in_agg_pk = secp256k1::PublicKey::from_str(
+            "021401301810a46a4e3f39e4603ec228ed301d9f2079767fda758dee7224b32e00",
+        )
+        .unwrap();
+        let expected_in_pubkeys = vec![
+            secp256k1::PublicKey::from_str(
+                "02bebd7a1cef20283444b96e9ce78137e951ce48705390933896311a9abc75736a",
+            )
+            .unwrap(),
+            secp256k1::PublicKey::from_str(
+                "0355212dff7b3d7e8126687a62fd0435a3fb4de56d9af9ae23a1c9ca05b349c8e2",
+            )
+            .unwrap(),
+        ];
+
+        let expected_out_agg_pk = secp256k1::PublicKey::from_str(
+            "0364934a64831bd917a2667b886671650846f021e1c025e4b2bb65e49ab3e7cba5",
+        )
+        .unwrap();
+
+        let expected_out_pubkeys = vec![
+            secp256k1::PublicKey::from_str(
+                "02841d69a8b80ae23a8090e6f3765540ea5efd8c287b1307c983a6e2a3a171b525",
+            )
+            .unwrap(),
+            secp256k1::PublicKey::from_str(
+                "02bad833849a98cdfb0a0749609ddccab16ad54485ecc67f828df4bdc4f2b90d4c",
+            )
+            .unwrap(),
+        ];
+
+        const PSBT_HEX: &str = "70736274ff01005e02000000017b42be5ea467afe0d0571dc4a91bef97ff9605a590c0b8d5892323946414d1810000000000ffffffff01f0b9f50500000000225120bc7e18f55e2c7a28d78cadac1bc72c248372375d269bafe6b315bc40505d07e5000000000001012b00e1f50500000000225120de564ebf8ff7bd9bb41bd88264c04b1713ebb9dc8df36319091d2eabb16cda6221161401301810a46a4e3f39e4603ec228ed301d9f2079767fda758dee7224b32e000500eb4cbe62211655212dff7b3d7e8126687a62fd0435a3fb4de56d9af9ae23a1c9ca05b349c8e20500755abbf92116bebd7a1cef20283444b96e9ce78137e951ce48705390933896311a9abc75736a05002a33dfd90117201401301810a46a4e3f39e4603ec228ed301d9f2079767fda758dee7224b32e00221a021401301810a46a4e3f39e4603ec228ed301d9f2079767fda758dee7224b32e004202bebd7a1cef20283444b96e9ce78137e951ce48705390933896311a9abc75736a0355212dff7b3d7e8126687a62fd0435a3fb4de56d9af9ae23a1c9ca05b349c8e20001052064934a64831bd917a2667b886671650846f021e1c025e4b2bb65e49ab3e7cba5210764934a64831bd917a2667b886671650846f021e1c025e4b2bb65e49ab3e7cba50500fa4c6afa22080364934a64831bd917a2667b886671650846f021e1c025e4b2bb65e49ab3e7cba54202841d69a8b80ae23a8090e6f3765540ea5efd8c287b1307c983a6e2a3a171b52502bad833849a98cdfb0a0749609ddccab16ad54485ecc67f828df4bdc4f2b90d4c00";
+
+        let psbt = hex_psbt(PSBT_HEX).unwrap();
+
+        assert_eq!(psbt.inputs[0].musig2_participant_pubkeys.len(), 1);
+        assert_eq!(
+            psbt.inputs[0].musig2_participant_pubkeys.iter().next().unwrap(),
+            (&expected_in_agg_pk, &expected_in_pubkeys)
+        );
+
+        assert_eq!(psbt.outputs[0].musig2_participant_pubkeys.len(), 1);
+        assert_eq!(
+            psbt.outputs[0].musig2_participant_pubkeys.iter().next().unwrap(),
+            (&expected_out_agg_pk, &expected_out_pubkeys)
+        );
+
+        // Check round trip de/serialization
+        assert_eq!(psbt.serialize_hex(), PSBT_HEX);
+
+        const PSBT_TRUNCATED_MUSIG_PARTICIPANTS_HEX: &str = "70736274ff01005e0200000001f034711ce319b1db76ce73440f2cb64a7e3a02e75c936b8d8a4958a024ea8d870000000000ffffffff01f0b9f50500000000225120bc7e18f55e2c7a28d78cadac1bc72c248372375d269bafe6b315bc40505d07e5000000000001012b00e1f50500000000225120de564ebf8ff7bd9bb41bd88264c04b1713ebb9dc8df36319091d2eabb16cda6221161401301810a46a4e3f39e4603ec228ed301d9f2079767fda758dee7224b32e000500eb4cbe62211655212dff7b3d7e8126687a62fd0435a3fb4de56d9af9ae23a1c9ca05b349c8e20500755abbf92116bebd7a1cef20283444b96e9ce78137e951ce48705390933896311a9abc75736a05002a33dfd90117201401301810a46a4e3f39e4603ec228ed301d9f2079767fda758dee7224b32e00221a021401301810a46a4e3f39e4603ec228ed301d9f2079767fda758dee7224b32e002a02bebd7a1cef20283444b96e9ce78137e951ce48705390933896311a9abc75736a0355212dff7b3d7e810001052064934a64831bd917a2667b886671650846f021e1c025e4b2bb65e49ab3e7cba5210764934a64831bd917a2667b886671650846f021e1c025e4b2bb65e49ab3e7cba50500fa4c6afa22080364934a64831bd917a2667b886671650846f021e1c025e4b2bb65e49ab3e7cba52a02841d69a8b80ae23a8090e6f3765540ea5efd8c287b1307c983a6e2a3a171b52502bad833849a98cdfb00";
+
+        hex_psbt(PSBT_TRUNCATED_MUSIG_PARTICIPANTS_HEX)
+            .expect_err("Deserializing PSBT with truncated musig participants should error");
+    }
+
     // PSBTs taken from BIP 174 test vectors.
     #[test]
     fn combine_psbts() {
@@ -2280,6 +2415,27 @@ mod tests {
             secp256k1::Parity::Even,
             "Key should be normalized to have even parity, even when original had odd parity"
         );
+    }
+
+    #[test]
+    fn get_key_xpriv_bip32_parent() {
+        let secp = Secp256k1::new();
+
+        let seed = hex!("000102030405060708090a0b0c0d0e0f");
+        let parent_xpriv: Xpriv = Xpriv::new_master(NetworkKind::Main, &seed);
+        let path: DerivationPath = "m/1/2/3".parse().unwrap();
+        let path_prefix: DerivationPath = "m/1".parse().unwrap();
+
+        let expected_private_key =
+            parent_xpriv.derive_xpriv(&secp, &path).unwrap().to_private_key();
+
+        let derived_xpriv = parent_xpriv.derive_xpriv(&secp, &path_prefix).unwrap();
+
+        let derived_key = derived_xpriv
+            .get_key(&KeyRequest::Bip32((parent_xpriv.fingerprint(&secp), path.clone())), &secp)
+            .unwrap();
+
+        assert_eq!(derived_key, Some(expected_private_key));
     }
 
     #[test]

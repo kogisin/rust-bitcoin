@@ -3,24 +3,24 @@
 use core::fmt;
 
 use hex::DisplayHex as _;
+use internals::array::ArrayExt; // For `split_first`.
 use internals::ToU64 as _;
+use secp256k1::{Secp256k1, Verification};
 
 use super::witness_version::WitnessVersion;
 use super::{
     Builder, Instruction, InstructionIndices, Instructions, PushBytes, RedeemScriptSizeError,
-    ScriptHash, WScriptHash, WitnessScriptSizeError,
+    Script, ScriptHash, WScriptHash, WitnessScriptSizeError,
 };
 use crate::consensus::{self, Encodable};
+use crate::key::{PublicKey, UntweakedPublicKey, WPubkeyHash};
 use crate::opcodes::all::*;
 use crate::opcodes::{self, Opcode};
 use crate::policy::{DUST_RELAY_TX_FEE, MAX_OP_RETURN_RELAY};
 use crate::prelude::{sink, String, ToString};
-use crate::taproot::{LeafVersion, TapLeafHash};
-use crate::{Amount, FeeRate};
-
-#[rustfmt::skip]            // Keep public re-exports separate.
-#[doc(inline)]
-pub use primitives::script::Script;
+use crate::script::{self, ScriptBufExt as _};
+use crate::taproot::{LeafVersion, TapLeafHash, TapNodeHash};
+use crate::{Amount, FeeRate, ScriptBuf};
 
 crate::internal_macros::define_extension_trait! {
     /// Extension functionality for the [`Script`] type.
@@ -48,6 +48,60 @@ crate::internal_macros::define_extension_trait! {
         #[inline]
         fn tapscript_leaf_hash(&self) -> TapLeafHash {
             TapLeafHash::from_script(self, LeafVersion::TapScript)
+        }
+
+        /// Computes the P2WSH output corresponding to this witnessScript (aka the "witness redeem
+        /// script").
+        fn to_p2wsh(&self) -> Result<ScriptBuf, WitnessScriptSizeError> {
+            self.wscript_hash().map(ScriptBuf::new_p2wsh)
+        }
+
+        /// Computes P2TR output with a given internal key and a single script spending path equal to
+        /// the current script, assuming that the script is a Tapscript.
+        fn to_p2tr<C: Verification, K: Into<UntweakedPublicKey>>(
+            &self,
+            secp: &Secp256k1<C>,
+            internal_key: K,
+        ) -> ScriptBuf {
+            let internal_key = internal_key.into();
+            let leaf_hash = self.tapscript_leaf_hash();
+            let merkle_root = TapNodeHash::from(leaf_hash);
+            ScriptBuf::new_p2tr(secp, internal_key, Some(merkle_root))
+        }
+
+        /// Computes the P2SH output corresponding to this redeem script.
+        fn to_p2sh(&self) -> Result<ScriptBuf, RedeemScriptSizeError> {
+            self.script_hash().map(ScriptBuf::new_p2sh)
+        }
+
+        /// Returns the script code used for spending a P2WPKH output if this script is a script pubkey
+        /// for a P2WPKH output. The `scriptCode` is described in [BIP143].
+        ///
+        /// [BIP143]: <https://github.com/bitcoin/bips/blob/99701f68a88ce33b2d0838eb84e115cef505b4c2/bip-0143.mediawiki>
+        fn p2wpkh_script_code(&self) -> Option<ScriptBuf> {
+            if self.is_p2wpkh() {
+                // The `self` script is 0x00, 0x14, <pubkey_hash>
+                let bytes = <[u8; 20]>::try_from(&self.as_bytes()[2..]).expect("length checked in is_p2wpkh()");
+                let wpkh = WPubkeyHash::from_byte_array(bytes);
+                Some(script::p2wpkh_script_code(wpkh))
+            } else {
+                None
+            }
+        }
+
+        /// Checks whether a script pubkey is a P2PK output.
+        ///
+        /// You can obtain the public key, if its valid,
+        /// by calling [`p2pk_public_key()`](Self::p2pk_public_key)
+        fn is_p2pk(&self) -> bool { self.p2pk_pubkey_bytes().is_some() }
+
+        /// Returns the public key if this script is P2PK with a **valid** public key.
+        ///
+        /// This may return `None` even when [`is_p2pk()`](Self::is_p2pk) returns true.
+        /// This happens when the public key is invalid (e.g. the point not being on the curve).
+        /// In this situation the script is unspendable.
+        fn p2pk_public_key(&self) -> Option<PublicKey> {
+            PublicKey::from_slice(self.p2pk_pubkey_bytes()?).ok()
         }
 
         /// Returns witness version of the script, if any, assuming the script is a `scriptPubkey`.
@@ -289,8 +343,8 @@ crate::internal_macros::define_extension_trait! {
         /// To use the default Bitcoin Core value, use [`minimal_non_dust`].
         ///
         /// [`minimal_non_dust`]: Script::minimal_non_dust
-        fn minimal_non_dust_custom(&self, dust_relay_fee: FeeRate) -> Option<Amount> {
-            self.minimal_non_dust_internal(dust_relay_fee.to_sat_per_kwu() * 4)
+        fn minimal_non_dust_custom(&self, dust_relay: FeeRate) -> Option<Amount> {
+            self.minimal_non_dust_internal(dust_relay.to_sat_per_kvb_ceil())
         }
 
         /// Counts the sigops for this Script using accurate counting.
@@ -331,7 +385,7 @@ crate::internal_macros::define_extension_trait! {
         ///
         /// To force minimal pushes, use [`instructions_minimal`](Self::instructions_minimal).
         #[inline]
-        fn instructions(&self) -> Instructions {
+        fn instructions(&self) -> Instructions<'_> {
             Instructions { data: self.as_bytes().iter(), enforce_minimal: false }
         }
 
@@ -340,7 +394,7 @@ crate::internal_macros::define_extension_trait! {
         /// This is similar to [`instructions`](Self::instructions) but an error is returned if a push
         /// is not minimal.
         #[inline]
-        fn instructions_minimal(&self) -> Instructions {
+        fn instructions_minimal(&self) -> Instructions<'_> {
             Instructions { data: self.as_bytes().iter(), enforce_minimal: true }
         }
 
@@ -352,7 +406,7 @@ crate::internal_macros::define_extension_trait! {
         ///
         /// To force minimal pushes, use [`Self::instruction_indices_minimal`].
         #[inline]
-        fn instruction_indices(&self) -> InstructionIndices {
+        fn instruction_indices(&self) -> InstructionIndices<'_> {
             InstructionIndices::from_instructions(self.instructions())
         }
 
@@ -361,7 +415,7 @@ crate::internal_macros::define_extension_trait! {
         /// This is similar to [`instruction_indices`](Self::instruction_indices) but an error is
         /// returned if a push is not minimal.
         #[inline]
-        fn instruction_indices_minimal(&self) -> InstructionIndices {
+        fn instruction_indices_minimal(&self) -> InstructionIndices<'_> {
             InstructionIndices::from_instructions(self.instructions_minimal())
         }
 
@@ -376,19 +430,19 @@ crate::internal_macros::define_extension_trait! {
         fn to_asm_string(&self) -> String { self.to_string() }
 
         /// Consensus encodes the script as lower-case hex.
-        #[deprecated(since = "TBD", note = "use `to_hex_string_prefixed()` instead")]
-        fn to_hex_string(&self) -> String { self.to_hex_string_prefixed() }
+        #[deprecated(since = "TBD", note = "use `to_hex_string_no_length_prefix` instead")]
+        fn to_hex_string(&self) -> String { self.to_hex_string_no_length_prefix() }
 
         /// Consensus encodes the script as lower-case hex.
+        ///
+        /// Consensus encoding includes a length prefix. To hex encode without the length prefix use
+        /// `to_hex_string_no_length_prefix`.
         fn to_hex_string_prefixed(&self) -> String { consensus::encode::serialize_hex(self) }
 
-        /// Consensus encodes the script as lower-case hex.
+        /// Encodes the script as lower-case hex.
         ///
-        /// This is **not** consensus encoding, you likely want to use `to_hex_string_prefixed`.
-        ///
-        /// # Returns
-        ///
-        /// The returned hex string will not include the length prefix.
+        /// This is **not** consensus encoding. The returned hex string will not include the length
+        /// prefix. See `to_hex_string_prefixed`.
         fn to_hex_string_no_length_prefix(&self) -> String {
             self.as_bytes().to_lower_hex_string()
         }
@@ -407,10 +461,25 @@ mod sealed {
 
 crate::internal_macros::define_extension_trait! {
     pub(crate) trait ScriptExtPriv impl for Script {
-        fn minimal_non_dust_internal(&self, dust_relay_fee: u64) -> Option<Amount> {
+        /// Returns the bytes of the (possibly invalid) public key if this script is P2PK.
+        fn p2pk_pubkey_bytes(&self) -> Option<&[u8]> {
+            if let Ok(bytes) = <&[u8; 67]>::try_from(self.as_bytes()) {
+                let (&first, bytes) = bytes.split_first::<66>();
+                let (&last, pubkey) = bytes.split_last::<65>();
+                (first == OP_PUSHBYTES_65.to_u8() && last == OP_CHECKSIG.to_u8()).then_some(pubkey)
+            } else if let Ok(bytes) = <&[u8; 35]>::try_from(self.as_bytes()) {
+                let (&first, bytes) = bytes.split_first::<34>();
+                let (&last, pubkey) = bytes.split_last::<33>();
+                (first == OP_PUSHBYTES_33.to_u8() && last == OP_CHECKSIG.to_u8()).then_some(pubkey)
+            } else {
+                None
+            }
+        }
+
+        fn minimal_non_dust_internal(&self, dust_relay_fee_rate_per_kvb: u64) -> Option<Amount> {
             // This must never be lower than Bitcoin Core's GetDustThreshold() (as of v0.21) as it may
             // otherwise allow users to create transactions which likely can never be broadcast/confirmed.
-            let sats = dust_relay_fee
+            let sats = dust_relay_fee_rate_per_kvb
                 .checked_mul(if self.is_op_return() {
                     0
                 } else if self.is_witness_program() {

@@ -24,19 +24,19 @@ use hashes::sha256d;
 use internals::compact_size;
 #[cfg(feature = "hex")]
 use internals::write_err;
+#[cfg(feature = "alloc")]
+use units::locktime::absolute;
 #[cfg(feature = "hex")]
 use units::parse;
+#[cfg(feature = "alloc")]
+use units::sequence::Sequence;
 #[cfg(feature = "alloc")]
 use units::{Amount, Weight};
 
 #[cfg(feature = "alloc")]
-use crate::locktime::absolute;
-#[cfg(feature = "alloc")]
 use crate::prelude::Vec;
 #[cfg(feature = "alloc")]
 use crate::script::ScriptBuf;
-#[cfg(feature = "alloc")]
-use crate::sequence::Sequence;
 #[cfg(feature = "alloc")]
 use crate::witness::Witness;
 
@@ -471,14 +471,12 @@ impl From<Infallible> for ParseOutPointError {
 #[cfg(feature = "hex")]
 impl fmt::Display for ParseOutPointError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use ParseOutPointError as E;
-
         match *self {
-            E::Txid(ref e) => write_err!(f, "error parsing TXID"; e),
-            E::Vout(ref e) => write_err!(f, "error parsing vout"; e),
-            E::Format => write!(f, "OutPoint not in <txid>:<vout> format"),
-            E::TooLong => write!(f, "vout should be at most 10 digits"),
-            E::VoutNotCanonical => write!(f, "no leading zeroes or + allowed in vout part"),
+            Self::Txid(ref e) => write_err!(f, "error parsing TXID"; e),
+            Self::Vout(ref e) => write_err!(f, "error parsing vout"; e),
+            Self::Format => write!(f, "OutPoint not in <txid>:<vout> format"),
+            Self::TooLong => write!(f, "vout should be at most 10 digits"),
+            Self::VoutNotCanonical => write!(f, "no leading zeroes or + allowed in vout part"),
         }
     }
 }
@@ -487,12 +485,10 @@ impl fmt::Display for ParseOutPointError {
 #[cfg(feature = "hex")]
 impl std::error::Error for ParseOutPointError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        use ParseOutPointError as E;
-
         match self {
-            E::Txid(e) => Some(e),
-            E::Vout(e) => Some(e),
-            E::Format | E::TooLong | E::VoutNotCanonical => None,
+            Self::Txid(e) => Some(e),
+            Self::Vout(e) => Some(e),
+            Self::Format | Self::TooLong | Self::VoutNotCanonical => None,
         }
     }
 }
@@ -656,6 +652,13 @@ impl<'a> Arbitrary<'a> for Txid {
     }
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for Wtxid {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Wtxid::from_byte_array(u.arbitrary()?))
+    }
+}
+
 #[cfg(feature = "alloc")]
 #[cfg(test)]
 mod tests {
@@ -733,9 +736,20 @@ mod tests {
         // Check the number of bytes OutPoint contributes to the transaction is equal to SIZE
         let outpoint_size = outpoint.txid.as_byte_array().len() + outpoint.vout.to_le_bytes().len();
         assert_eq!(outpoint_size, OutPoint::SIZE);
+    }
 
-        // Check TooLong error
-        outpoint_str.push_str("0000000000");
+    #[test]
+    #[cfg(feature = "hex")]
+    fn outpoint_from_str_too_long() {
+        // Check edge case: length exactly 75
+        let mut outpoint_str = "0".repeat(64);
+        outpoint_str.push_str(":1234567890");
+        assert_eq!(outpoint_str.len(), 75);
+        assert!(outpoint_str.parse::<OutPoint>().is_ok());
+
+        // Check TooLong error (length 76)
+        outpoint_str.push('0');
+        assert_eq!(outpoint_str.len(), 76);
         let outpoint: Result<OutPoint, ParseOutPointError> = outpoint_str.parse();
         assert_eq!(outpoint, Err(ParseOutPointError::TooLong));
     }

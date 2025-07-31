@@ -59,13 +59,14 @@ const PSBT_IN_TAP_BIP32_DERIVATION: u64 = 0x16;
 const PSBT_IN_TAP_INTERNAL_KEY: u64 = 0x17;
 /// Type: Taproot Merkle Root PSBT_IN_TAP_MERKLE_ROOT = 0x18
 const PSBT_IN_TAP_MERKLE_ROOT: u64 = 0x18;
+/// Type: MuSig2 Public Keys Participating in Aggregate Input PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS = 0x1a
+const PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS: u64 = 0x1a;
 /// Type: Proprietary Use Type PSBT_IN_PROPRIETARY = 0xFC
 const PSBT_IN_PROPRIETARY: u64 = 0xFC;
 
 /// A key-value map for an input of the corresponding index in the unsigned
 /// transaction.
 #[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Input {
     /// The non-witness transaction this input spends from. Should only be
     /// `Option::Some` for inputs which spend non-SegWit outputs or
@@ -87,7 +88,6 @@ pub struct Input {
     pub witness_script: Option<ScriptBuf>,
     /// A map from public keys needed to sign this input to their corresponding
     /// master key fingerprints and derivation paths.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
     pub bip32_derivation: BTreeMap<secp256k1::PublicKey, KeySource>,
     /// The finalized, fully-constructed scriptSig with signatures and any other
     /// scripts necessary for this input to pass validation.
@@ -96,37 +96,30 @@ pub struct Input {
     /// other scripts necessary for this input to pass validation.
     pub final_script_witness: Option<Witness>,
     /// RIPEMD160 hash to preimage map.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub ripemd160_preimages: BTreeMap<ripemd160::Hash, Vec<u8>>,
     /// SHA256 hash to preimage map.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub sha256_preimages: BTreeMap<sha256::Hash, Vec<u8>>,
     /// HASH160 hash to preimage map.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub hash160_preimages: BTreeMap<hash160::Hash, Vec<u8>>,
     /// HASH256 hash to preimage map.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub hash256_preimages: BTreeMap<sha256d::Hash, Vec<u8>>,
     /// Serialized Taproot signature with sighash type for key spend.
     pub tap_key_sig: Option<taproot::Signature>,
     /// Map of `<xonlypubkey>|<leafhash>` with signature.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
     pub tap_script_sigs: BTreeMap<(XOnlyPublicKey, TapLeafHash), taproot::Signature>,
     /// Map of Control blocks to Script version pair.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
     pub tap_scripts: BTreeMap<ControlBlock, (ScriptBuf, LeafVersion)>,
     /// Map of tap root x only keys to origin info and leaf hashes contained in it.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
     pub tap_key_origins: BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>,
     /// Taproot Internal key.
     pub tap_internal_key: Option<XOnlyPublicKey>,
     /// Taproot Merkle root.
     pub tap_merkle_root: Option<TapNodeHash>,
+    /// Mapping from MuSig2 aggregate keys to the participant keys from which they were aggregated.
+    pub musig2_participant_pubkeys: BTreeMap<secp256k1::PublicKey, Vec<secp256k1::PublicKey>>,
     /// Proprietary key-value pairs for this input.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>>,
     /// Unknown key-value pairs for this input.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub unknown: BTreeMap<raw::Key, Vec<u8>>,
 }
 
@@ -147,7 +140,6 @@ pub struct Input {
 /// let _tap_sighash_all: PsbtSighashType = TapSighashType::All.into();
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PsbtSighashType {
     pub(in crate::psbt) inner: u32,
 }
@@ -364,6 +356,11 @@ impl Input {
                     self.tap_merkle_root <= <raw_key: _>|< raw_value: TapNodeHash>
                 }
             }
+            PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS => {
+                impl_psbt_insert_pair! {
+                    self.musig2_participant_pubkeys <= <raw_key: secp256k1::PublicKey>|< raw_value: Vec<secp256k1::PublicKey> >
+                }
+            }
             PSBT_IN_PROPRIETARY => {
                 let key = raw::ProprietaryKey::try_from(raw_key.clone())?;
                 match self.proprietary.entry(key) {
@@ -402,6 +399,7 @@ impl Input {
         self.tap_script_sigs.extend(other.tap_script_sigs);
         self.tap_scripts.extend(other.tap_scripts);
         self.tap_key_origins.extend(other.tap_key_origins);
+        self.musig2_participant_pubkeys.extend(other.musig2_participant_pubkeys);
         self.proprietary.extend(other.proprietary);
         self.unknown.extend(other.unknown);
 
@@ -494,6 +492,11 @@ impl Map for Input {
         impl_psbt_get_pair! {
             rv.push(self.tap_merkle_root, PSBT_IN_TAP_MERKLE_ROOT)
         }
+
+        impl_psbt_get_pair! {
+            rv.push_map(self.musig2_participant_pubkeys, PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS)
+        }
+
         for (key, value) in self.proprietary.iter() {
             rv.push(raw::Pair { key: key.to_key(), value: value.clone() });
         }

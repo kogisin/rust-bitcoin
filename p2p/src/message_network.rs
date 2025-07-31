@@ -4,16 +4,15 @@
 //!
 //! This module defines network messages which describe peers and their
 //! capabilities.
+use std::borrow::Cow;
 
+use bitcoin::consensus::{encode, Decodable, Encodable, ReadExt, WriteExt};
 use hashes::sha256d;
 use io::{BufRead, Write};
 
-use crate::consensus::{self, encode, Decodable, Encodable, ReadExt};
-use crate::internal_macros::impl_consensus_encoding;
-use crate::p2p;
-use crate::p2p::address::Address;
-use crate::p2p::ServiceFlags;
-use crate::prelude::{Cow, String};
+use crate::address::Address;
+use crate::consensus::{impl_consensus_encoding, impl_vec_wrapper};
+use crate::ServiceFlags;
 
 // Some simple messages
 
@@ -61,7 +60,7 @@ impl VersionMessage {
         start_height: i32,
     ) -> VersionMessage {
         VersionMessage {
-            version: p2p::PROTOCOL_VERSION,
+            version: crate::PROTOCOL_VERSION,
             services,
             timestamp,
             receiver,
@@ -126,7 +125,7 @@ impl Decodable for RejectReason {
             0x41 => RejectReason::Dust,
             0x42 => RejectReason::Fee,
             0x43 => RejectReason::Checkpoint,
-            _ => return Err(consensus::parse_failed_error("unknown reject code")),
+            _ => return Err(crate::consensus::parse_failed_error("unknown reject code")),
         })
     }
 }
@@ -146,12 +145,35 @@ pub struct Reject {
 
 impl_consensus_encoding!(Reject, message, ccode, reason, hash);
 
+/// A deprecated message type that was used to notify users of system changes. Due to a number of
+/// vulerabilities, alerts are no longer used. A final alert was sent as of Bitcoin Core 0.14.0,
+/// and is sent to any node that is advertising a potentially vulerable protocol version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert(Vec<u8>);
+
+impl Alert {
+    const FINAL_ALERT: [u8; 96] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 127, 0, 0, 0, 0, 255, 255, 255, 127, 254, 255, 255, 127, 1, 255, 255, 255, 127, 0, 0, 0, 0, 255, 255, 255, 127, 0, 255, 255, 255, 127, 0, 47, 85, 82, 71, 69, 78, 84, 58, 32, 65, 108, 101, 114, 116, 32, 107, 101, 121, 32, 99, 111, 109, 112, 114, 111, 109, 105, 115, 101, 100, 44, 32, 117, 112, 103, 114, 97, 100, 101, 32, 114, 101, 113, 117, 105, 114, 101, 100, 0];
+
+    /// Build the final alert to send to a potentially vulerable peer.
+    pub fn final_alert() -> Self {
+        Self(Self::FINAL_ALERT.into())
+    }
+
+    /// The final alert advertised by Bitcoin Core. This alert is sent if the advertised protocol
+    /// version is vulerable to the alert-system vulerablities.
+    pub fn is_final_alert(&self) -> bool {
+        self.0.eq(&Self::FINAL_ALERT)
+    }
+}
+
+impl_vec_wrapper!(Alert, Vec<u8>);
+
 #[cfg(test)]
 mod tests {
+    use bitcoin::consensus::encode::{deserialize, serialize};
     use hex_lit::hex;
 
     use super::*;
-    use crate::consensus::encode::{deserialize, serialize};
 
     #[test]
     fn version_message_test() {
@@ -208,5 +230,12 @@ mod tests {
 
         assert_eq!(serialize(&conflict), reject_tx_conflict);
         assert_eq!(serialize(&nonfinal), reject_tx_nonfinal);
+    }
+
+    #[test]
+    fn alert_message_test() {
+        let alert_hex = hex!("60010000000000000000000000ffffff7f00000000ffffff7ffeffff7f01ffffff7f00000000ffffff7f00ffffff7f002f555247454e543a20416c657274206b657920636f6d70726f6d697365642c207570677261646520726571756972656400");
+        let alert: Alert = deserialize(&alert_hex).unwrap();
+        assert!(alert.is_final_alert());
     }
 }

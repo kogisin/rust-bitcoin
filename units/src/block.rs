@@ -6,7 +6,7 @@
 //!
 //! These are general types for abstracting over block heights, they are not designed to use with
 //! lock times. If you are creating lock times you should be using the
-//! [`locktime::absolute::Height`] and [`locktime::relative::Height`] types.
+//! [`locktime::absolute::Height`] and [`locktime::relative::NumberOfBlocks`] types.
 //!
 //! The difference between these types and the locktime types is that these types are thin wrappers
 //! whereas the locktime types contain more complex locktime specific abstractions.
@@ -16,7 +16,7 @@ use core::{fmt, ops};
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[cfg(doc)]
 use crate::locktime;
@@ -30,23 +30,6 @@ macro_rules! impl_u32_wrapper {
         $(#[$($type_attrs)*])*
         $type_vis struct $newtype($inner_vis u32);
 
-        impl $newtype {
-            /// Block height 0, the genesis block.
-            pub const ZERO: Self = Self(0);
-
-            /// The minimum block height (0), the genesis block.
-            pub const MIN: Self = Self::ZERO;
-
-            /// The maximum block height.
-            pub const MAX: Self = Self(u32::MAX);
-
-            /// Constructs a new block height from a `u32`.
-            pub const fn from_u32(inner: u32) -> Self { Self(inner) }
-
-            /// Returns block height as a `u32`.
-            pub const fn to_u32(self) -> u32 { self.0 }
-        }
-
         impl fmt::Display for $newtype {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
         }
@@ -59,6 +42,28 @@ macro_rules! impl_u32_wrapper {
 
         impl From<$newtype> for u32 {
             fn from(height: $newtype) -> Self { height.to_u32() }
+        }
+
+        #[cfg(feature = "serde")]
+        impl Serialize for $newtype {
+            #[inline]
+            fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                u32::serialize(&self.to_u32(), s)
+            }
+        }
+
+        #[cfg(feature = "serde")]
+        impl<'de> Deserialize<'de> for $newtype {
+            #[inline]
+            fn deserialize<D>(d: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                Ok(Self::from_u32(u32::deserialize(d)?))
+            }
         }
 
         #[cfg(feature = "arbitrary")]
@@ -84,20 +89,35 @@ impl_u32_wrapper! {
     ///
     /// This is a thin wrapper around a `u32` that may take on all values of a `u32`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    // Public to try and make it really clear that there are no invariants.
-    pub struct BlockHeight(pub u32);
+    pub struct BlockHeight(u32);
 }
 
 impl BlockHeight {
-    /// Attempt to subtract two [`BlockHeight`]s, returning `None` in case of overflow.
+    /// Block height 0, the genesis block.
+    pub const ZERO: Self = Self(0);
+
+    /// The minimum block height (0), the genesis block.
+    pub const MIN: Self = Self::ZERO;
+
+    /// The maximum block height.
+    pub const MAX: Self = Self(u32::MAX);
+
+    /// Constructs a new block height from a `u32`.
+    pub const fn from_u32(inner: u32) -> Self { Self(inner) }
+
+    /// Returns block height as a `u32`.
+    pub const fn to_u32(self) -> u32 { self.0 }
+
+    /// Attempt to subtract two [`BlockHeight`]s, returning `None` if overflow occurred.
+    #[must_use]
     pub fn checked_sub(self, other: Self) -> Option<BlockHeightInterval> {
-        self.0.checked_sub(other.0).map(BlockHeightInterval)
+        self.to_u32().checked_sub(other.to_u32()).map(BlockHeightInterval)
     }
 
-    /// Attempt to add an interval to this [`BlockHeight`], returning `None` in case of overflow.
+    /// Attempt to add an interval to this [`BlockHeight`], returning `None` if overflow occurred.
+    #[must_use]
     pub fn checked_add(self, other: BlockHeightInterval) -> Option<Self> {
-        self.0.checked_add(other.0).map(Self)
+        self.to_u32().checked_add(other.to_u32()).map(Self)
     }
 }
 
@@ -127,19 +147,38 @@ impl_u32_wrapper! {
     /// Block interval is an integer type representing a difference between the heights of two blocks.
     ///
     /// This type is not meant for constructing relative height based timelocks. It is a general
-    /// purpose block interval abstraction. For locktimes please see [`locktime::relative::Height`].
+    /// purpose block interval abstraction. For locktimes please see [`locktime::relative::NumberOfBlocks`].
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    // Public to try and make it really clear that there are no invariants.
-    pub struct BlockHeightInterval(pub u32);
+    pub struct BlockHeightInterval(u32);
 }
 
 impl BlockHeightInterval {
-    /// Attempt to subtract two [`BlockHeightInterval`]s, returning `None` in case of overflow.
-    pub fn checked_sub(self, other: Self) -> Option<Self> { self.0.checked_sub(other.0).map(Self) }
+    /// Block interval 0.
+    pub const ZERO: Self = Self(0);
 
-    /// Attempt to add two [`BlockHeightInterval`]s, returning `None` in case of overflow.
-    pub fn checked_add(self, other: Self) -> Option<Self> { self.0.checked_add(other.0).map(Self) }
+    /// The minimum block interval, equivalent to `Self::ZERO`.
+    pub const MIN: Self = Self::ZERO;
+
+    /// The maximum block interval.
+    pub const MAX: Self = Self(u32::MAX);
+
+    /// Constructs a new block interval from a `u32`.
+    pub const fn from_u32(inner: u32) -> Self { Self(inner) }
+
+    /// Returns block interval as a `u32`.
+    pub const fn to_u32(self) -> u32 { self.0 }
+
+    /// Attempt to subtract two [`BlockHeightInterval`]s, returning `None` if overflow occurred.
+    #[must_use]
+    pub fn checked_sub(self, other: Self) -> Option<Self> {
+        self.to_u32().checked_sub(other.to_u32()).map(Self)
+    }
+
+    /// Attempt to add two [`BlockHeightInterval`]s, returning `None` if overflow occurred.
+    #[must_use]
+    pub fn checked_add(self, other: Self) -> Option<Self> {
+        self.to_u32().checked_add(other.to_u32()).map(Self)
+    }
 }
 
 impl From<relative::NumberOfBlocks> for BlockHeightInterval {
@@ -172,12 +211,28 @@ impl_u32_wrapper! {
     ///
     /// This is a thin wrapper around a `u32` that may take on all values of a `u32`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    // Public to try and make it really clear that there are no invariants.
-    pub struct BlockMtp(pub u32);
+    pub struct BlockMtp(u32);
 }
 
 impl BlockMtp {
+    /// Block MTP 0.
+    ///
+    /// Since MTP is a timestamp, 0 is before Bitcoin was invented. This const may still be useful
+    /// for some use cases e.g., folding a sum of intervals.
+    pub const ZERO: Self = Self(0);
+
+    /// The minimum block MTP, equivalent to `Self::ZERO`.
+    pub const MIN: Self = Self::ZERO;
+
+    /// The maximum block MTP.
+    pub const MAX: Self = Self(u32::MAX);
+
+    /// Constructs a new block MTP from a `u32`.
+    pub const fn from_u32(inner: u32) -> Self { Self(inner) }
+
+    /// Returns block MTP as a `u32`.
+    pub const fn to_u32(self) -> u32 { self.0 }
+
     /// Constructs a [`BlockMtp`] by computing the median‐time‐past from the last 11 block timestamps
     ///
     /// Because block timestamps are not monotonic, this function internally sorts them;
@@ -188,14 +243,16 @@ impl BlockMtp {
         Self::from_u32(u32::from(timestamps[5]))
     }
 
-    /// Attempt to subtract two [`BlockMtp`]s, returning `None` in case of overflow.
+    /// Attempt to subtract two [`BlockMtp`]s, returning `None` if overflow occurred.
+    #[must_use]
     pub fn checked_sub(self, other: Self) -> Option<BlockMtpInterval> {
-        self.0.checked_sub(other.0).map(BlockMtpInterval)
+        self.to_u32().checked_sub(other.to_u32()).map(BlockMtpInterval)
     }
 
-    /// Attempt to add an interval to this [`BlockMtp`], returning `None` in case of overflow.
+    /// Attempt to add an interval to this [`BlockMtp`], returning `None` if overflow occurred.
+    #[must_use]
     pub fn checked_add(self, other: BlockMtpInterval) -> Option<Self> {
-        self.0.checked_add(other.0).map(Self)
+        self.to_u32().checked_add(other.to_u32()).map(Self)
     }
 }
 
@@ -227,12 +284,25 @@ impl_u32_wrapper! {
     ///
     /// This is a thin wrapper around a `u32` that may take on all values of a `u32`.
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    // Public to try and make it really clear that there are no invariants.
-    pub struct BlockMtpInterval(pub u32);
+    pub struct BlockMtpInterval(u32);
 }
 
 impl BlockMtpInterval {
+    /// Block MTP interval 0.
+    pub const ZERO: Self = Self(0);
+
+    /// The minimum block MTP interval, equivalent to `Self::ZERO`.
+    pub const MIN: Self = Self::ZERO;
+
+    /// The maximum block MTP interval.
+    pub const MAX: Self = Self(u32::MAX);
+
+    /// Constructs a new block MTP interval from a `u32`.
+    pub const fn from_u32(inner: u32) -> Self { Self(inner) }
+
+    /// Returns block MTP interval as a `u32`.
+    pub const fn to_u32(self) -> u32 { self.0 }
+
     /// Converts a [`BlockMtpInterval`] to a [`locktime::relative::NumberOf512Seconds`], rounding down.
     ///
     /// Relative timelock MTP intervals have a resolution of 512 seconds, while
@@ -265,11 +335,17 @@ impl BlockMtpInterval {
         relative::NumberOf512Seconds::from_seconds_ceil(self.to_u32())
     }
 
-    /// Attempt to subtract two [`BlockMtpInterval`]s, returning `None` in case of overflow.
-    pub fn checked_sub(self, other: Self) -> Option<Self> { self.0.checked_sub(other.0).map(Self) }
+    /// Attempt to subtract two [`BlockMtpInterval`]s, returning `None` if overflow occurred.
+    #[must_use]
+    pub fn checked_sub(self, other: Self) -> Option<Self> {
+        self.to_u32().checked_sub(other.to_u32()).map(Self)
+    }
 
-    /// Attempt to add two [`BlockMtpInterval`]s, returning `None` in case of overflow.
-    pub fn checked_add(self, other: Self) -> Option<Self> { self.0.checked_add(other.0).map(Self) }
+    /// Attempt to add two [`BlockMtpInterval`]s, returning `None` if overflow occurred.
+    #[must_use]
+    pub fn checked_add(self, other: Self) -> Option<Self> {
+        self.to_u32().checked_add(other.to_u32()).map(Self)
+    }
 }
 
 impl From<relative::NumberOf512Seconds> for BlockMtpInterval {
@@ -408,7 +484,7 @@ crate::internal_macros::impl_sub_assign!(BlockMtpInterval);
 
 impl core::iter::Sum for BlockHeightInterval {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let sum = iter.map(|interval| interval.0).sum();
+        let sum = iter.map(BlockHeightInterval::to_u32).sum();
         BlockHeightInterval::from_u32(sum)
     }
 }
@@ -418,14 +494,14 @@ impl<'a> core::iter::Sum<&'a BlockHeightInterval> for BlockHeightInterval {
     where
         I: Iterator<Item = &'a BlockHeightInterval>,
     {
-        let sum = iter.map(|interval| interval.0).sum();
+        let sum = iter.map(|interval| interval.to_u32()).sum();
         BlockHeightInterval::from_u32(sum)
     }
 }
 
 impl core::iter::Sum for BlockMtpInterval {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let sum = iter.map(|interval| interval.0).sum();
+        let sum = iter.map(BlockMtpInterval::to_u32).sum();
         BlockMtpInterval::from_u32(sum)
     }
 }
@@ -435,7 +511,7 @@ impl<'a> core::iter::Sum<&'a BlockMtpInterval> for BlockMtpInterval {
     where
         I: Iterator<Item = &'a BlockMtpInterval>,
     {
-        let sum = iter.map(|interval| interval.0).sum();
+        let sum = iter.map(|interval| interval.to_u32()).sum();
         BlockMtpInterval::from_u32(sum)
     }
 }
@@ -443,6 +519,7 @@ impl<'a> core::iter::Sum<&'a BlockMtpInterval> for BlockMtpInterval {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::locktime::relative::NumberOf512Seconds;
 
     #[test]
     fn sanity_check() {
@@ -483,6 +560,7 @@ mod tests {
         // interval - interval = interval
         assert!(BlockHeightInterval(10) - BlockHeightInterval(7) == BlockHeightInterval(3));
 
+        // Sum for BlockHeightInterval by reference and by value
         assert!(
             [BlockHeightInterval(1), BlockHeightInterval(2), BlockHeightInterval(3)]
                 .iter()
@@ -496,6 +574,20 @@ mod tests {
                 == BlockHeightInterval(15)
         );
 
+        // Sum for BlockMtpInterval by reference and by value
+        assert!(
+            [BlockMtpInterval(1), BlockMtpInterval(2), BlockMtpInterval(3)]
+                .iter()
+                .sum::<BlockMtpInterval>()
+                == BlockMtpInterval(6)
+        );
+        assert!(
+            [BlockMtpInterval(4), BlockMtpInterval(5), BlockMtpInterval(6)]
+                .into_iter()
+                .sum::<BlockMtpInterval>()
+                == BlockMtpInterval(15)
+        );
+
         // interval += interval
         let mut int = BlockHeightInterval(1);
         int += BlockHeightInterval(2);
@@ -505,5 +597,55 @@ mod tests {
         let mut int = BlockHeightInterval(10);
         int -= BlockHeightInterval(7);
         assert_eq!(int, BlockHeightInterval(3));
+    }
+
+    #[test]
+    fn block_height_checked() {
+        let a = BlockHeight(10);
+        let b = BlockHeight(5);
+        assert_eq!(a.checked_sub(b), Some(BlockHeightInterval(5)));
+        assert_eq!(a.checked_add(BlockHeightInterval(5)), Some(BlockHeight(15)));
+        assert_eq!(a.checked_sub(BlockHeight(11)), None);
+        assert_eq!(a.checked_add(BlockHeightInterval(u32::MAX - 5)), None);
+    }
+
+    #[test]
+    fn block_height_interval_checked() {
+        let a = BlockHeightInterval(10);
+        let b = BlockHeightInterval(5);
+        assert_eq!(a.checked_sub(b), Some(BlockHeightInterval(5)));
+        assert_eq!(a.checked_add(b), Some(BlockHeightInterval(15)));
+        assert_eq!(a.checked_sub(BlockHeightInterval(11)), None);
+        assert_eq!(a.checked_add(BlockHeightInterval(u32::MAX - 5)), None);
+    }
+
+    #[test]
+    fn block_mtp_interval_checked() {
+        let a = BlockMtpInterval(10);
+        let b = BlockMtpInterval(5);
+        assert_eq!(a.checked_sub(b), Some(BlockMtpInterval(5)));
+        assert_eq!(a.checked_add(b), Some(BlockMtpInterval(15)));
+        assert_eq!(a.checked_sub(BlockMtpInterval(11)), None);
+        assert_eq!(a.checked_add(BlockMtpInterval(u32::MAX - 5)), None);
+    }
+
+    #[test]
+    fn block_mtp_checked() {
+        let a = BlockMtp(10);
+        let b = BlockMtp(5);
+        assert_eq!(a.checked_sub(b), Some(BlockMtpInterval(5)));
+        assert_eq!(a.checked_add(BlockMtpInterval(5)), Some(BlockMtp(15)));
+        assert_eq!(a.checked_sub(BlockMtp(11)), None);
+        assert_eq!(a.checked_add(BlockMtpInterval(u32::MAX - 5)), None);
+    }
+
+    #[test]
+    fn block_mtp_interval_from_number_of_512seconds() {
+        let n = NumberOf512Seconds::from_seconds_floor(0).unwrap();
+        let interval = BlockMtpInterval::from(n);
+        assert_eq!(interval, BlockMtpInterval(0));
+        let n = NumberOf512Seconds::from_seconds_floor(1024).unwrap();
+        let interval = BlockMtpInterval::from(n);
+        assert_eq!(interval, BlockMtpInterval(1024));
     }
 }

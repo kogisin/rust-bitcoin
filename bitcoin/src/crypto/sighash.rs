@@ -20,9 +20,9 @@ use hashes::{hash_newtype, sha256, sha256d, sha256t, sha256t_tag};
 use internals::write_err;
 use io::Write;
 
-use crate::address::script_pubkey::ScriptExt as _;
 use crate::consensus::{encode, Encodable};
 use crate::prelude::{Borrow, BorrowMut, String, ToOwned};
+use crate::script::ScriptExt as _;
 use crate::taproot::{LeafVersion, TapLeafHash, TapLeafTag, TAPROOT_ANNEX_PREFIX};
 use crate::transaction::TransactionExt as _;
 use crate::witness::Witness;
@@ -2009,7 +2009,7 @@ mod tests {
             // tests
             let keypair = secp256k1::Keypair::from_secret_key(secp, &internal_priv_key);
             let (internal_key, _parity) = XOnlyPublicKey::from_keypair(&keypair);
-            let tweak = TapTweakHash::from_key_and_tweak(internal_key, merkle_root);
+            let tweak = TapTweakHash::from_key_and_merkle_root(internal_key, merkle_root);
             let tweaked_keypair = keypair.add_xonly_tweak(secp, &tweak.to_scalar()).unwrap();
             let mut sig_msg = Vec::new();
             cache

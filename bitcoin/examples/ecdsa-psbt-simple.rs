@@ -24,13 +24,12 @@
 //! The miner's fee will be 10,000 satoshis.
 use std::collections::BTreeMap;
 
-use bitcoin::address::script_pubkey::ScriptBufExt as _;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, IntoDerivationPath, Xpriv, Xpub};
+use bitcoin::ext::*;
 use bitcoin::key::WPubkeyHash;
 use bitcoin::locktime::absolute;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::{Secp256k1, Signing};
-use bitcoin::witness::WitnessExt as _;
 use bitcoin::{
     consensus, transaction, Address, Amount, EcdsaSighashType, Network, OutPoint, Psbt, ScriptBuf,
     Sequence, Transaction, TxIn, TxOut, Txid, Witness,
@@ -67,7 +66,7 @@ fn get_external_address_xpriv<C: Signing>(
     let external_index = ChildNumber::ZERO_NORMAL;
     let idx = ChildNumber::from_normal_idx(index).expect("valid index number");
 
-    child_xpriv.derive_xpriv(secp, &[external_index, idx]).expect("only deriving two more steps")
+    child_xpriv.derive_xpriv(secp, [external_index, idx]).expect("only deriving two more steps")
 }
 
 // Derive the internal address xpriv.
@@ -83,7 +82,7 @@ fn get_internal_address_xpriv<C: Signing>(
     let internal_index = ChildNumber::ONE_NORMAL;
     let idx = ChildNumber::from_normal_idx(index).expect("valid index number");
 
-    child_xpriv.derive_xpriv(secp, &[internal_index, idx]).expect("only deriving two more steps")
+    child_xpriv.derive_xpriv(secp, [internal_index, idx]).expect("only deriving two more steps")
 }
 
 // The address to send to.

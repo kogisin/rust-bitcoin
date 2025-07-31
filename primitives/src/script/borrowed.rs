@@ -52,7 +52,7 @@ internals::transparent_newtype! {
     /// # Hexadecimal strings
     ///
     /// Scripts are consensus encoded with a length prefix and as a result of this in some places in
-    /// the eccosystem one will encounter hex strings that include the prefix while in other places
+    /// the ecosystem one will encounter hex strings that include the prefix while in other places
     /// the prefix is excluded. To support parsing and formatting scripts as hex we provide a bunch
     /// of different APIs and trait implementations. Please see [`examples/script.rs`] for a
     /// thorough example of all the APIs.
@@ -137,6 +137,18 @@ impl Script {
         let inner = unsafe { Box::from_raw(rw) };
         ScriptBuf::from_bytes(Vec::from(inner))
     }
+
+    /// Gets the hex representation of this script.
+    ///
+    /// # Returns
+    ///
+    /// Just the script bytes in hexadecimal **not** consensus encoding of the script i.e., the
+    /// string will not include a length prefix.
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "hex")]
+    #[inline]
+    #[deprecated(since = "TBD", note = "use `format!(\"{var:x}\")` instead")]
+    pub fn to_hex(&self) -> alloc::string::String { alloc::format!("{:x}", self) }
 }
 
 #[cfg(feature = "arbitrary")]

@@ -193,6 +193,29 @@ impl ChildNumber {
             ChildNumber::Hardened { index: idx } => ChildNumber::from_hardened_idx(idx + 1),
         }
     }
+
+    /// Formats the child number using the provided formatting function.
+    ///
+    /// For hardened child numbers appends a `'` or `hardened_alt_suffix`
+    /// depending on the formatter.
+    fn format_with<F>(
+        &self,
+        f: &mut fmt::Formatter,
+        format_fn: F,
+        hardened_alt_suffix: &str,
+    ) -> fmt::Result
+    where
+        F: Fn(&u32, &mut fmt::Formatter) -> fmt::Result,
+    {
+        match *self {
+            ChildNumber::Hardened { index } => {
+                format_fn(&index, f)?;
+                let alt = f.alternate();
+                f.write_str(if alt { hardened_alt_suffix } else { "'" })
+            }
+            ChildNumber::Normal { index } => format_fn(&index, f),
+        }
+    }
 }
 
 impl From<u32> for ChildNumber {
@@ -216,14 +239,31 @@ impl From<ChildNumber> for u32 {
 
 impl fmt::Display for ChildNumber {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ChildNumber::Hardened { index } => {
-                fmt::Display::fmt(&index, f)?;
-                let alt = f.alternate();
-                f.write_str(if alt { "h" } else { "'" })
-            }
-            ChildNumber::Normal { index } => fmt::Display::fmt(&index, f),
-        }
+        self.format_with(f, fmt::Display::fmt, "h")
+    }
+}
+
+impl fmt::LowerHex for ChildNumber {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.format_with(f, fmt::LowerHex::fmt, "h")
+    }
+}
+
+impl fmt::UpperHex for ChildNumber {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.format_with(f, fmt::UpperHex::fmt, "H")
+    }
+}
+
+impl fmt::Octal for ChildNumber {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.format_with(f, fmt::Octal::fmt, "h")
+    }
+}
+
+impl fmt::Binary for ChildNumber {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.format_with(f, fmt::Binary::fmt, "h")
     }
 }
 
@@ -416,17 +456,17 @@ impl DerivationPath {
 
     /// Get an [Iterator] over the children of this [DerivationPath]
     /// starting with the given [ChildNumber].
-    pub fn children_from(&self, cn: ChildNumber) -> DerivationPathIterator {
+    pub fn children_from(&self, cn: ChildNumber) -> DerivationPathIterator<'_> {
         DerivationPathIterator::start_from(self, cn)
     }
 
     /// Get an [Iterator] over the unhardened children of this [DerivationPath].
-    pub fn normal_children(&self) -> DerivationPathIterator {
+    pub fn normal_children(&self) -> DerivationPathIterator<'_> {
         DerivationPathIterator::start_from(self, ChildNumber::Normal { index: 0 })
     }
 
     /// Get an [Iterator] over the hardened children of this [DerivationPath].
-    pub fn hardened_children(&self) -> DerivationPathIterator {
+    pub fn hardened_children(&self) -> DerivationPathIterator<'_> {
         DerivationPathIterator::start_from(self, ChildNumber::Hardened { index: 0 })
     }
 
@@ -482,11 +522,19 @@ impl fmt::Display for DerivationPath {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut iter = self.0.iter();
         if let Some(first_element) = iter.next() {
-            write!(f, "{}", first_element)?;
+            if f.alternate() {
+                write!(f, "{:#}", first_element)?;
+            } else {
+                write!(f, "{}", first_element)?;
+            }
         }
         for cn in iter {
             f.write_str("/")?;
-            write!(f, "{}", cn)?;
+            if f.alternate() {
+                write!(f, "{:#}", cn)?;
+            } else {
+                write!(f, "{}", cn)?;
+            }
         }
         Ok(())
     }
@@ -624,7 +672,7 @@ impl From<Infallible> for IndexOutOfRangeError {
 
 impl fmt::Display for IndexOutOfRangeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "index {} out of range [0, 2^31 - 1] (do you have an hardened child number, rather than an index?)", self.index)
+        write!(f, "index {} out of range [0, 2^31 - 1] (do you have a hardened child number, rather than an index?)", self.index)
     }
 }
 
@@ -708,7 +756,7 @@ impl Xpriv {
     pub fn derive_priv<C: secp256k1::Signing, P: AsRef<[ChildNumber]>>(
         &self,
         secp: &Secp256k1<C>,
-        path: &P,
+        path: P,
     ) -> Result<Xpriv, DerivationError> {
         self.derive_xpriv(secp, path)
     }
@@ -719,7 +767,7 @@ impl Xpriv {
     pub fn derive_xpriv<C: secp256k1::Signing, P: AsRef<[ChildNumber]>>(
         &self,
         secp: &Secp256k1<C>,
-        path: &P,
+        path: P,
     ) -> Result<Xpriv, DerivationError> {
         let mut sk: Xpriv = *self;
         for cnum in path.as_ref() {
@@ -862,7 +910,7 @@ impl Xpub {
     pub fn derive_pub<C: secp256k1::Verification, P: AsRef<[ChildNumber]>>(
         &self,
         secp: &Secp256k1<C>,
-        path: &P,
+        path: P,
     ) -> Result<Xpub, DerivationError> {
         self.derive_xpub(secp, path)
     }
@@ -873,7 +921,7 @@ impl Xpub {
     pub fn derive_xpub<C: secp256k1::Verification, P: AsRef<[ChildNumber]>>(
         &self,
         secp: &Secp256k1<C>,
-        path: &P,
+        path: P,
     ) -> Result<Xpub, DerivationError> {
         let mut pk: Xpub = *self;
         for cnum in path.as_ref() {
@@ -1098,70 +1146,137 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_derivation_path() {
-        assert!(matches!(
-            "n/0'/0".parse::<DerivationPath>(),
-            Err(ParseChildNumberError::ParseInt(..)),
-        ));
-        assert!(matches!(
-            "4/m/5".parse::<DerivationPath>(),
-            Err(ParseChildNumberError::ParseInt(..)),
-        ));
-        assert!(matches!(
-            "//3/0'".parse::<DerivationPath>(),
-            Err(ParseChildNumberError::ParseInt(..)),
-        ));
-        assert!(matches!(
-            "0h/0x".parse::<DerivationPath>(),
-            Err(ParseChildNumberError::ParseInt(..)),
-        ));
+    fn parse_derivation_path_invalid_format() {
+        let invalid_paths = ["n/0'/0", "4/m/5", "//3/0'", "0h/0x"];
+        for path in &invalid_paths {
+            assert!(matches!(
+                path.parse::<DerivationPath>(),
+                Err(ParseChildNumberError::ParseInt(..)),
+            ));
+        }
+    }
+
+    #[test]
+    fn test_derivation_path_display() {
+        let path = DerivationPath::from_str("m/84'/0'/0'/0/0").unwrap();
+        assert_eq!(format!("{}", path), "84'/0'/0'/0/0");
+        assert_eq!(format!("{:#}", path), "84h/0h/0h/0/0");
+    }
+
+    #[test]
+    fn test_lowerhex_formatting() {
+        let normal = Normal { index: 42 };
+        let hardened = Hardened { index: 42 };
+
+        assert_eq!(format!("{:x}", normal), "2a");
+        assert_eq!(format!("{:#x}", normal), "0x2a");
+
+        assert_eq!(format!("{:x}", hardened), "2a'");
+        assert_eq!(format!("{:#x}", hardened), "0x2ah");
+    }
+
+    #[test]
+    fn test_upperhex_formatting() {
+        let normal = Normal { index: 42 };
+        let hardened = Hardened { index: 42 };
+
+        assert_eq!(format!("{:X}", normal), "2A");
+        assert_eq!(format!("{:#X}", normal), "0x2A");
+
+        assert_eq!(format!("{:X}", hardened), "2A'");
+        assert_eq!(format!("{:#X}", hardened), "0x2AH");
+    }
+
+    #[test]
+    fn test_octal_formatting() {
+        let normal = Normal { index: 42 };
+        let hardened = Hardened { index: 42 };
+
+        assert_eq!(format!("{:o}", normal), "52");
+        assert_eq!(format!("{:#o}", normal), "0o52");
+
+        assert_eq!(format!("{:o}", hardened), "52'");
+        assert_eq!(format!("{:#o}", hardened), "0o52h");
+    }
+
+    #[test]
+    fn test_binary_formatting() {
+        let normal = Normal { index: 42 };
+        let hardened = Hardened { index: 42 };
+
+        assert_eq!(format!("{:b}", normal), "101010");
+        assert_eq!(format!("{:#b}", normal), "0b101010");
+
+        assert_eq!(format!("{:b}", hardened), "101010'");
+        assert_eq!(format!("{:#b}", hardened), "0b101010h");
+    }
+
+    #[test]
+    fn parse_derivation_path_out_of_range() {
+        let invalid_path = "2147483648";
         assert_eq!(
-            "2147483648".parse::<DerivationPath>(),
+            invalid_path.parse::<DerivationPath>(),
             Err(ParseChildNumberError::IndexOutOfRange(IndexOutOfRangeError { index: 2147483648 })),
         );
+    }
 
+    #[test]
+    fn parse_derivation_path_valid_empty_master() {
+        // Sanity checks.
+        assert_eq!(DerivationPath::master(), DerivationPath(vec![]));
         assert_eq!(DerivationPath::master(), "".parse::<DerivationPath>().unwrap());
         assert_eq!(DerivationPath::master(), DerivationPath::default());
 
-        // Acceptable forms for a master path.
+        // Empty is the same as with an `m`.
+        assert_eq!("".parse::<DerivationPath>().unwrap(), DerivationPath(vec![]));
         assert_eq!("m".parse::<DerivationPath>().unwrap(), DerivationPath(vec![]));
         assert_eq!("m/".parse::<DerivationPath>().unwrap(), DerivationPath(vec![]));
-        assert_eq!("".parse::<DerivationPath>().unwrap(), DerivationPath(vec![]));
+    }
 
-        assert_eq!("0'".parse::<DerivationPath>(), Ok(vec![ChildNumber::ZERO_HARDENED].into()));
-        assert_eq!(
-            "0'/1".parse::<DerivationPath>(),
-            Ok(vec![ChildNumber::ZERO_HARDENED, ChildNumber::ONE_NORMAL].into())
-        );
-        assert_eq!(
-            "0h/1/2'".parse::<DerivationPath>(),
-            Ok(vec![
-                ChildNumber::ZERO_HARDENED,
-                ChildNumber::ONE_NORMAL,
-                ChildNumber::from_hardened_idx(2).unwrap(),
-            ]
-            .into())
-        );
-        assert_eq!(
-            "0'/1/2h/2".parse::<DerivationPath>(),
-            Ok(vec![
-                ChildNumber::ZERO_HARDENED,
-                ChildNumber::ONE_NORMAL,
-                ChildNumber::from_hardened_idx(2).unwrap(),
-                ChildNumber::from_normal_idx(2).unwrap(),
-            ]
-            .into())
-        );
-        let want = DerivationPath::from(vec![
-            ChildNumber::ZERO_HARDENED,
-            ChildNumber::ONE_NORMAL,
-            ChildNumber::from_hardened_idx(2).unwrap(),
-            ChildNumber::from_normal_idx(2).unwrap(),
-            ChildNumber::from_normal_idx(1000000000).unwrap(),
-        ]);
-        assert_eq!("0'/1/2'/2/1000000000".parse::<DerivationPath>().unwrap(), want);
-        assert_eq!("m/0'/1/2'/2/1000000000".parse::<DerivationPath>().unwrap(), want);
+    #[test]
+    fn parse_derivation_path_valid() {
+        let valid_paths = [
+            ("0'", vec![ChildNumber::ZERO_HARDENED]),
+            ("0'/1", vec![ChildNumber::ZERO_HARDENED, ChildNumber::ONE_NORMAL]),
+            (
+                "0h/1/2'",
+                vec![
+                    ChildNumber::ZERO_HARDENED,
+                    ChildNumber::ONE_NORMAL,
+                    ChildNumber::from_hardened_idx(2).unwrap(),
+                ],
+            ),
+            (
+                "0'/1/2h/2",
+                vec![
+                    ChildNumber::ZERO_HARDENED,
+                    ChildNumber::ONE_NORMAL,
+                    ChildNumber::from_hardened_idx(2).unwrap(),
+                    ChildNumber::from_normal_idx(2).unwrap(),
+                ],
+            ),
+            (
+                "0'/1/2'/2/1000000000",
+                vec![
+                    ChildNumber::ZERO_HARDENED,
+                    ChildNumber::ONE_NORMAL,
+                    ChildNumber::from_hardened_idx(2).unwrap(),
+                    ChildNumber::from_normal_idx(2).unwrap(),
+                    ChildNumber::from_normal_idx(1000000000).unwrap(),
+                ],
+            ),
+        ];
+        for (path, expected) in valid_paths {
+            // Access the inner private field so we don't have to clone expected.
+            assert_eq!(path.parse::<DerivationPath>().unwrap().0, expected);
+            // Test with the leading `m` for good measure.
+            let prefixed = format!("m/{}", path);
+            assert_eq!(prefixed.parse::<DerivationPath>().unwrap().0, expected);
+        }
+    }
 
+    #[test]
+    fn parse_derivation_path_same_as_into_derivation_path() {
         let s = "0'/50/3'/5/545456";
         assert_eq!(s.parse::<DerivationPath>(), s.into_derivation_path());
         assert_eq!(s.parse::<DerivationPath>(), s.to_string().into_derivation_path());
