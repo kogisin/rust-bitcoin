@@ -29,9 +29,13 @@ This changelog is a rolling description of everything that will eventually end u
 * Remove `InputString` from the public API [#3905](https://github.com/rust-bitcoin/rust-bitcoin/pull/3905)
 * Hide the remaining public macros [#3867](https://github.com/rust-bitcoin/rust-bitcoin/pull/3867)
 * Change method return type for `to_unsigned()` [#3769](https://github.com/rust-bitcoin/rust-bitcoin/pull/3769)
-* Change paramater type used for whole bitcoin [#3744](https://github.com/rust-bitcoin/rust-bitcoin/pull/3744)
+* Change parameter type used for whole bitcoin [#3744](https://github.com/rust-bitcoin/rust-bitcoin/pull/3744)
 * Add `Weight::to_kwu_ceil` [#3740](https://github.com/rust-bitcoin/rust-bitcoin/pull/3740)
 * Replace `String` with `InputString` [#3559](https://github.com/rust-bitcoin/rust-bitcoin/pull/3559)
+* Do not re-export doc hidden macros
+* Use the new `consensus_encoding` crate to re-write encoding logic.
+  * Decoders with phantoms [#5008](https://github.com/rust-bitcoin/rust-bitcoin/pull/5008)
+  * Improve the decoders [#5027](https://github.com/rust-bitcoin/rust-bitcoin/pull/5027)
 
 ## Changes relate to error types
 

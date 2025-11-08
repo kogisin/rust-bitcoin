@@ -6,15 +6,14 @@ use bitcoin::bip32::{DerivationPath, Fingerprint};
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::opcodes::all::OP_CHECKSIG;
 use bitcoin::psbt::{GetKey, Input, KeyRequest, PsbtSighashType, SignError};
-use bitcoin::script::ScriptExt as _;
+use bitcoin::script::TapScriptExt as _;
 use bitcoin::taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo};
 use bitcoin::transaction::Version;
 use bitcoin::{
-    absolute, script, Address, Network, OutPoint, PrivateKey, Psbt, ScriptBuf, Sequence,
-    Transaction, TxIn, TxOut, Witness, XOnlyPublicKey,
+    absolute, script, Address, Amount, Network, OutPoint, PrivateKey, Psbt, ScriptSigBuf, Sequence,
+    TapScriptBuf, Transaction, TxIn, TxOut, Witness, XOnlyPublicKey,
 };
 use secp256k1::{Keypair, Secp256k1, Signing};
-use units::Amount;
 
 #[test]
 fn psbt_sign_taproot() {
@@ -167,7 +166,7 @@ fn psbt_sign_taproot() {
     }
 }
 
-fn create_basic_single_sig_script(secp: &Secp256k1<secp256k1::All>, sk: &str) -> ScriptBuf {
+fn create_basic_single_sig_script(secp: &Secp256k1<secp256k1::All>, sk: &str) -> TapScriptBuf {
     let kp = Keypair::from_seckey_str(secp, sk).expect("failed to create keypair");
     let x_only_pubkey = kp.x_only_public_key().0;
     script::Builder::new()
@@ -178,9 +177,9 @@ fn create_basic_single_sig_script(secp: &Secp256k1<secp256k1::All>, sk: &str) ->
 
 fn create_taproot_tree<K: Into<XOnlyPublicKey>>(
     secp: &Secp256k1<secp256k1::All>,
-    script1: ScriptBuf,
-    script2: ScriptBuf,
-    script3: ScriptBuf,
+    script1: TapScriptBuf,
+    script2: TapScriptBuf,
+    script3: TapScriptBuf,
     internal_key: K,
 ) -> TaprootSpendInfo {
     let internal_key = internal_key.into();
@@ -201,9 +200,9 @@ fn create_psbt_for_taproot_key_path_spend(
     to_address: Address,
     tree: TaprootSpendInfo,
 ) -> Psbt {
-    let send_value = 6400;
+    let send_amount = 6400;
     let out_puts = vec![TxOut {
-        value: Amount::from_sat(send_value).unwrap(),
+        amount: Amount::from_sat(send_amount).unwrap(),
         script_pubkey: to_address.script_pubkey(),
     }];
     let prev_tx_id = "06980ca116f74c7845a897461dd0e1d15b114130176de5004957da516b4dee3a";
@@ -211,13 +210,13 @@ fn create_psbt_for_taproot_key_path_spend(
     let transaction = Transaction {
         version: Version::TWO,
         lock_time: absolute::LockTime::ZERO,
-        input: vec![TxIn {
+        inputs: vec![TxIn {
             previous_output: OutPoint { txid: prev_tx_id.parse().unwrap(), vout: 0 },
-            script_sig: ScriptBuf::new(),
+            script_sig: ScriptSigBuf::new(),
             sequence: Sequence(0xFFFFFFFF), // Ignore nSequence.
             witness: Witness::default(),
         }],
-        output: out_puts,
+        outputs: out_puts,
     };
 
     let mut psbt = Psbt::from_unsigned_tx(transaction).unwrap();
@@ -237,11 +236,11 @@ fn create_psbt_for_taproot_key_path_spend(
         ),
     );
 
-    let utxo_value = 6588;
+    let utxo_amount = 6588;
     let mut input = Input {
         witness_utxo: {
             let script_pubkey = from_address.script_pubkey();
-            Some(TxOut { value: Amount::from_sat(utxo_value).unwrap(), script_pubkey })
+            Some(TxOut { amount: Amount::from_sat(utxo_amount).unwrap(), script_pubkey })
         },
         tap_key_origins: origins,
         ..Default::default()
@@ -274,28 +273,28 @@ fn create_psbt_for_taproot_script_path_spend<K: Into<XOnlyPublicKey>>(
     tree: TaprootSpendInfo,
     x_only_pubkey_of_signing_key: K,
     signing_key_path: &str,
-    use_script: ScriptBuf,
+    use_script: TapScriptBuf,
 ) -> Psbt {
     let x_only_pubkey_of_signing_key = x_only_pubkey_of_signing_key.into();
-    let utxo_value = 6280;
-    let send_value = 6000;
+    let utxo_amount = 6280;
+    let send_amount = 6000;
     let mfp = "73c5da0a";
 
     let out_puts = vec![TxOut {
-        value: Amount::from_sat(send_value).unwrap(),
+        amount: Amount::from_sat(send_amount).unwrap(),
         script_pubkey: to_address.script_pubkey(),
     }];
     let prev_tx_id = "9d7c6770fca57285babab60c51834cfcfd10ad302119cae842d7216b4ac9a376";
     let transaction = Transaction {
         version: Version::TWO,
         lock_time: absolute::LockTime::ZERO,
-        input: vec![TxIn {
+        inputs: vec![TxIn {
             previous_output: OutPoint { txid: prev_tx_id.parse().unwrap(), vout: 0 },
-            script_sig: ScriptBuf::new(),
+            script_sig: ScriptSigBuf::new(),
             sequence: Sequence(0xFFFFFFFF), // Ignore nSequence.
             witness: Witness::default(),
         }],
-        output: out_puts,
+        outputs: out_puts,
     };
 
     let mut psbt = Psbt::from_unsigned_tx(transaction).unwrap();
@@ -321,7 +320,7 @@ fn create_psbt_for_taproot_script_path_spend<K: Into<XOnlyPublicKey>>(
     let mut input = Input {
         witness_utxo: {
             let script_pubkey = from_address.script_pubkey();
-            Some(TxOut { value: Amount::from_sat(utxo_value).unwrap(), script_pubkey })
+            Some(TxOut { amount: Amount::from_sat(utxo_amount).unwrap(), script_pubkey })
         },
         tap_key_origins: origins,
         tap_scripts,

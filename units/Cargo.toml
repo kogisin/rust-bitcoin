@@ -1,7 +1,7 @@
 [package]
 name = "bitcoin-units"
-version = "1.0.0-rc.0"
-authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>"]
+version = "1.0.0-rc.2"
+authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>", "Tobin C. Harding <me@tobin.cc>"]
 license = "CC0-1.0"
 repository = "https://github.com/rust-bitcoin/rust-bitcoin/"
 description = "Basic Bitcoin numeric units such as amount"
@@ -9,26 +9,27 @@ categories = ["cryptography::cryptocurrencies"]
 keywords = ["bitcoin", "newtypes", "no-std"]
 readme = "README.md"
 edition = "2021"
-rust-version = "1.63.0"
+rust-version = "1.74.0"
 exclude = ["tests", "contrib"]
 
 [features]
 default = ["std"]
-std = ["alloc", "internals/std"]
-alloc = ["internals/alloc","serde?/alloc"]
+std = ["alloc", "internals/std", "encoding?/std"]
+alloc = ["internals/alloc", "serde?/alloc", "encoding?/alloc"]
 
 [dependencies]
-internals = { package = "bitcoin-internals", path = "../internals", version = "0.4.0" }
+encoding = { package = "bitcoin-consensus-encoding", path = "../consensus_encoding", version = "1.0.0-rc.1", default-features = false, optional = true }
+internals = { package = "bitcoin-internals", path = "../internals", version = "0.4.1" }
 
-serde = { version = "1.0.103", default-features = false, features = ["derive"], optional = true }
-arbitrary = { version = "1.4", optional = true }
+serde = { version = "1.0.195", default-features = false, features = ["derive"], optional = true }
+arbitrary = { version = "1.4.1", optional = true }
 
 [dev-dependencies]
 internals = { package = "bitcoin-internals", path = "../internals", version = "0.4.0", features = ["test-serde"] }
 bincode = "1.3.1"
-serde = { version = "1.0.103", default-features = false, features = ["derive"] }
-serde_test = "1.0"
-serde_json = "1.0"
+serde = { version = "1.0.195", default-features = false, features = ["derive"] }
+serde_test = "1.0.19"
+serde_json = "1.0.68"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -100,7 +101,7 @@ manual_string_new = "warn"
 many_single_char_names = "warn"
 map_unwrap_or = "warn"
 match_bool = "allow" # Adds extra indentation and LOC.
-match_on_vec_items = "warn"
+indexing_slicing = "warn"
 match_same_arms = "allow" # Collapses things that are conceptually unrelated to each other.
 match_wild_err_arm = "warn"
 match_wildcard_for_single_variants = "warn"
@@ -143,7 +144,7 @@ stable_sort_primitive = "warn"
 str_split_at_newline = "warn"
 string_add_assign = "warn"
 struct_excessive_bools = "warn"
-struct_field_names = "warn"
+struct_field_names = "allow" # dumb
 too_many_lines = "warn"
 transmute_ptr_to_ptr = "warn"
 trivially_copy_pass_by_ref = "warn"
@@ -159,6 +160,7 @@ unreadable_literal = "warn"
 unsafe_derive_deserialize = "warn"
 unused_async = "warn"
 unused_self = "warn"
+use_self = "warn"
 used_underscore_binding = "warn"
 used_underscore_items = "warn"
 verbose_bit_mask = "warn"

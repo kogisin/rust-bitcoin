@@ -38,8 +38,8 @@ use bitcoin::locktime::absolute;
 use bitcoin::psbt::{self, Input, Psbt, PsbtSighashType};
 use bitcoin::secp256k1::{Secp256k1, Signing, Verification};
 use bitcoin::{
-    transaction, Address, Amount, CompressedPublicKey, Network, OutPoint, ScriptBuf, Sequence,
-    Transaction, TxIn, TxOut, Witness,
+    transaction, Address, Amount, CompressedPublicKey, Network, OutPoint, RedeemScriptBuf,
+    ScriptPubKeyBuf, ScriptSigBuf, Sequence, Transaction, TxIn, TxOut, Witness,
 };
 
 type Result<T> = std::result::Result<T, Error>;
@@ -51,7 +51,7 @@ const EXTENDED_MASTER_PRIVATE_KEY: &str = "tprv8ZgxMBicQKsPeSHZFZWT8zxie2dXWcwem
 const INPUT_UTXO_TXID: &str = "295f06639cde6039bf0c3dbf4827f0e3f2b2c2b476408e2f9af731a8d7a9c7fb";
 const INPUT_UTXO_VOUT: u32 = 0;
 const INPUT_UTXO_SCRIPT_PUBKEY: &str = "00149891eeb8891b3e80a2a1ade180f143add23bf5de";
-const INPUT_UTXO_VALUE: &str = "50 BTC";
+const INPUT_UTXO_AMOUNT: &str = "50 BTC";
 // Get this from the descriptor,
 // "wpkh([97f17dca/0'/0'/0']02749483607dafb30c66bd93ece4474be65745ce538c2d70e8e246f17e7a4e0c0c)#m9n56cx0".
 const INPUT_UTXO_DERIVATION_PATH: &str = "0h/0h/0h";
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// We cache the pubkeys for convenience because it requires a scep context to convert the private key.
+// We cache the pubkeys for convenience because it requires a secp256k1 context to convert the private key.
 /// An example of an offline signer i.e., a cold-storage device.
 struct ColdStorage {
     /// The master extended private key.
@@ -124,7 +124,7 @@ impl ColdStorage {
         let input_xpriv = master_xpriv.derive_xpriv(secp, &path).expect("derivation path is short");
         let input_xpub = Xpub::from_xpriv(secp, &input_xpriv);
 
-        let wallet = ColdStorage { master_xpriv, master_xpub };
+        let wallet = Self { master_xpriv, master_xpub };
         let fingerprint = wallet.master_fingerprint();
 
         Ok((wallet, fingerprint, account_0_xpub, input_xpub))
@@ -150,7 +150,7 @@ impl ColdStorage {
     }
 }
 
-/// An example of an watch-only online wallet.
+/// An example of a watch-only online wallet.
 struct WatchOnly {
     /// The xpub for account 0 derived from derivation path "m/84h/0h/0h".
     account_0_xpub: Xpub,
@@ -169,10 +169,10 @@ impl WatchOnly {
     /// The reason for importing the `input_xpub` is so one can use bitcoind to grab a valid input
     /// to verify the workflow presented in this file.
     fn new(account_0_xpub: Xpub, input_xpub: Xpub, master_fingerprint: Fingerprint) -> Self {
-        WatchOnly { account_0_xpub, input_xpub, master_fingerprint }
+        Self { account_0_xpub, input_xpub, master_fingerprint }
     }
 
-    /// Creates the PSBT, in BIP174 parlance this is the 'Creator'.
+    /// Creates the PSBT, in BIP-0174 parlance this is the 'Creator'.
     fn create_psbt<C: Verification>(&self, secp: &Secp256k1<C>) -> Result<Psbt> {
         let to_address =
             RECEIVE_ADDRESS.parse::<Address<_>>()?.require_network(Network::Regtest)?;
@@ -184,15 +184,15 @@ impl WatchOnly {
         let tx = Transaction {
             version: transaction::Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input: vec![TxIn {
+            inputs: vec![TxIn {
                 previous_output: OutPoint { txid: INPUT_UTXO_TXID.parse()?, vout: INPUT_UTXO_VOUT },
-                script_sig: ScriptBuf::new(),
+                script_sig: ScriptSigBuf::new(),
                 sequence: Sequence::MAX, // Disable LockTime and RBF.
                 witness: Witness::default(),
             }],
-            output: vec![
-                TxOut { value: to_amount, script_pubkey: to_address.script_pubkey() },
-                TxOut { value: change_amount, script_pubkey: change_address.script_pubkey() },
+            outputs: vec![
+                TxOut { amount: to_amount, script_pubkey: to_address.script_pubkey() },
+                TxOut { amount: change_amount, script_pubkey: change_address.script_pubkey() },
             ],
         };
 
@@ -201,14 +201,14 @@ impl WatchOnly {
         Ok(psbt)
     }
 
-    /// Updates the PSBT, in BIP174 parlance this is the 'Updater'.
+    /// Updates the PSBT, in BIP-0174 parlance this is the 'Updater'.
     fn update_psbt(&self, mut psbt: Psbt) -> Result<Psbt> {
         let mut input = Input { witness_utxo: Some(previous_output()), ..Default::default() };
 
         let pk = self.input_xpub.to_public_key();
         let wpkh = pk.wpubkey_hash();
 
-        let redeem_script = ScriptBuf::new_p2wpkh(wpkh);
+        let redeem_script = RedeemScriptBuf::new_p2wpkh(wpkh);
         input.redeem_script = Some(redeem_script);
 
         let fingerprint = self.master_fingerprint;
@@ -225,7 +225,7 @@ impl WatchOnly {
         Ok(psbt)
     }
 
-    /// Finalizes the PSBT, in BIP174 parlance this is the 'Finalizer'.
+    /// Finalizes the PSBT, in BIP-0174 parlance this is the 'Finalizer'.
     /// This is just an example. For a production-ready PSBT Finalizer, use [rust-miniscript](https://docs.rs/miniscript/latest/miniscript/psbt/trait.PsbtExt.html#tymethod.finalize)
     fn finalize_psbt(&self, mut psbt: Psbt) -> Result<Psbt> {
         if psbt.inputs.is_empty() {
@@ -249,7 +249,7 @@ impl WatchOnly {
         Ok(psbt)
     }
 
-    /// Returns data for the first change address (standard BIP84 derivation path
+    /// Returns data for the first change address (standard BIP-0084 derivation path
     /// "m/84h/0h/0h/1/0"). A real wallet would have access to the chain so could determine if an
     /// address has been used or not. We ignore this detail and just re-use the first change address
     /// without loss of generality.
@@ -274,17 +274,17 @@ fn input_derivation_path() -> Result<DerivationPath> {
 }
 
 fn previous_output() -> TxOut {
-    let script_pubkey = ScriptBuf::from_hex_no_length_prefix(INPUT_UTXO_SCRIPT_PUBKEY)
+    let script_pubkey = ScriptPubKeyBuf::from_hex_no_length_prefix(INPUT_UTXO_SCRIPT_PUBKEY)
         .expect("failed to parse input utxo scriptPubkey");
-    let amount = INPUT_UTXO_VALUE.parse::<Amount>().expect("failed to parse input utxo value");
+    let amount = INPUT_UTXO_AMOUNT.parse::<Amount>().expect("failed to parse input utxo amount");
 
-    TxOut { value: amount, script_pubkey }
+    TxOut { amount, script_pubkey }
 }
 
 struct Error(Box<dyn std::error::Error>);
 
 impl<T: std::error::Error + 'static> From<T> for Error {
-    fn from(e: T) -> Self { Error(Box::new(e)) }
+    fn from(e: T) -> Self { Self(Box::new(e)) }
 }
 
 impl fmt::Debug for Error {

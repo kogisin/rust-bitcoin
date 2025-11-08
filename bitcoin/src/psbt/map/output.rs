@@ -5,24 +5,24 @@ use crate::crypto::key::XOnlyPublicKey;
 use crate::prelude::{btree_map, BTreeMap, Vec};
 use crate::psbt::map::Map;
 use crate::psbt::{raw, Error};
-use crate::script::ScriptBuf;
+use crate::script::{RedeemScriptBuf, WitnessScriptBuf};
 use crate::taproot::{TapLeafHash, TapTree};
 
 /// Type: Redeem ScriptBuf PSBT_OUT_REDEEM_SCRIPT = 0x00
 const PSBT_OUT_REDEEM_SCRIPT: u64 = 0x00;
 /// Type: Witness ScriptBuf PSBT_OUT_WITNESS_SCRIPT = 0x01
 const PSBT_OUT_WITNESS_SCRIPT: u64 = 0x01;
-/// Type: BIP 32 Derivation Path PSBT_OUT_BIP32_DERIVATION = 0x02
+/// Type: BIP-0032 Derivation Path PSBT_OUT_BIP32_DERIVATION = 0x02
 const PSBT_OUT_BIP32_DERIVATION: u64 = 0x02;
 /// Type: Taproot Internal Key PSBT_OUT_TAP_INTERNAL_KEY = 0x05
 const PSBT_OUT_TAP_INTERNAL_KEY: u64 = 0x05;
 /// Type: Taproot Tree PSBT_OUT_TAP_TREE = 0x06
 const PSBT_OUT_TAP_TREE: u64 = 0x06;
-/// Type: Taproot Key BIP 32 Derivation Path PSBT_OUT_TAP_BIP32_DERIVATION = 0x07
+/// Type: Taproot Key BIP-0032 Derivation Path PSBT_OUT_TAP_BIP32_DERIVATION = 0x07
 const PSBT_OUT_TAP_BIP32_DERIVATION: u64 = 0x07;
 /// Type: MuSig2 Public Keys Participating in Aggregate Output PSBT_OUT_MUSIG2_PARTICIPANT_PUBKEYS = 0x08
 const PSBT_OUT_MUSIG2_PARTICIPANT_PUBKEYS: u64 = 0x08;
-/// Type: Proprietary Use Type PSBT_IN_PROPRIETARY = 0xFC
+/// Type: Proprietary Use Type PSBT_OUT_PROPRIETARY = 0xFC
 const PSBT_OUT_PROPRIETARY: u64 = 0xFC;
 
 /// A key-value map for an output of the corresponding index in the unsigned
@@ -30,9 +30,9 @@ const PSBT_OUT_PROPRIETARY: u64 = 0xFC;
 #[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
 pub struct Output {
     /// The redeem script for this output.
-    pub redeem_script: Option<ScriptBuf>,
+    pub redeem_script: Option<RedeemScriptBuf>,
     /// The witness script for this output.
-    pub witness_script: Option<ScriptBuf>,
+    pub witness_script: Option<WitnessScriptBuf>,
     /// A map from public keys needed to spend this output to their
     /// corresponding master key fingerprints and derivation paths.
     pub bip32_derivation: BTreeMap<secp256k1::PublicKey, KeySource>,
@@ -57,12 +57,12 @@ impl Output {
         match raw_key.type_value {
             PSBT_OUT_REDEEM_SCRIPT => {
                 impl_psbt_insert_pair! {
-                    self.redeem_script <= <raw_key: _>|<raw_value: ScriptBuf>
+                    self.redeem_script <= <raw_key: _>|<raw_value: RedeemScriptBuf>
                 }
             }
             PSBT_OUT_WITNESS_SCRIPT => {
                 impl_psbt_insert_pair! {
-                    self.witness_script <= <raw_key: _>|<raw_value: ScriptBuf>
+                    self.witness_script <= <raw_key: _>|<raw_value: WitnessScriptBuf>
                 }
             }
             PSBT_OUT_BIP32_DERIVATION => {

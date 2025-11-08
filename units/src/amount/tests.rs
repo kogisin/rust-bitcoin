@@ -12,8 +12,10 @@ use std::panic;
 
 use super::*;
 #[cfg(feature = "alloc")]
+use crate::result::MathOp;
+use crate::result::NumOpResult;
+#[cfg(feature = "alloc")]
 use crate::{FeeRate, Weight};
-use crate::{MathOp, NumOpResult};
 
 #[track_caller]
 fn sat(sat: u64) -> Amount { Amount::from_sat(sat).unwrap() }
@@ -86,7 +88,7 @@ fn from_str_zero() {
             Ok(_) => panic!("unsigned amount from {}", s),
         }
         match s.parse::<SignedAmount>() {
-            Err(e) => panic!("failed to crate amount from {}: {:?}", s, e),
+            Err(e) => panic!("failed to create amount from {}: {:?}", s, e),
             Ok(amount) => assert_eq!(amount, SignedAmount::ZERO),
         }
     }
@@ -486,7 +488,7 @@ fn test_repeat_char() {
     assert!(buf.chars().all(|c| c == '0'));
 }
 
-// Creates individual test functions to make it easier to find which check failed.
+// Constructs individual test functions to make it easier to find which check failed.
 macro_rules! check_format_non_negative {
     ($denom:ident; $($test_name:ident, $val:literal, $format_string:literal, $expected:literal);* $(;)?) => {
         $(
@@ -1150,7 +1152,7 @@ fn check_const() {
     assert_eq!(Amount::MAX.to_sat() as i64, SignedAmount::MAX.to_sat());
 }
 
-// Sanity check than stdlib supports the set of reference combinations for the ops we want.
+// Sanity check that stdlib supports the set of reference combinations for the ops we want.
 #[test]
 #[allow(clippy::op_ref)] // We are explicitly testing the references work with ops.
 fn sanity_all_ops() {
@@ -1330,4 +1332,48 @@ fn signed_amount_div_nonzero() {
     //checking also for &T/U, T/&Uvariant
     assert_eq!(&signed / divisor, SignedAmount::from_sat(-25).unwrap());
     assert_eq!(signed / &divisor, SignedAmount::from_sat(-25).unwrap());
+}
+
+#[test]
+fn signed_sub() {
+    // Test the core feature: cannot overflow unlike regular subtraction
+    let small = sat(100);
+    let large = sat(1000);
+
+    // Regular checked_sub would fail (returns None) for small - large
+    assert_eq!(small.checked_sub(large), None);
+
+    // But signed_sub works - this is the key feature!
+    let result = small.signed_sub(large);
+    assert_eq!(result.to_sat(), -900);
+    assert!(result.is_negative());
+
+    // Test positive result
+    let result2 = large.signed_sub(small);
+    assert_eq!(result2.to_sat(), 900);
+    assert!(result2.is_positive());
+
+    // Test zero result
+    let result3 = large.signed_sub(large);
+    assert_eq!(result3.to_sat(), 0);
+
+    // Test edge cases with maximum amounts
+    let max_diff = Amount::MAX.signed_sub(Amount::ZERO);
+    assert_eq!(max_diff.to_sat(), Amount::MAX.to_sat() as i64);
+
+    let min_diff = Amount::ZERO.signed_sub(Amount::MAX);
+    assert_eq!(min_diff.to_sat(), -(Amount::MAX.to_sat() as i64));
+
+    // Any two valid amounts will always produce a valid SignedAmount
+    // This demonstrates the "cannot overflow" property
+    let amt1 = Amount::MAX_MONEY;
+    let amt2 = sat(1);
+
+    let diff1 = amt1.signed_sub(amt2);
+    let diff2 = amt2.signed_sub(amt1);
+
+    assert!(diff1.is_positive());
+    assert!(diff2.is_negative());
+    assert_eq!(diff1.to_sat(), (Amount::MAX_MONEY.to_sat() - 1) as i64);
+    assert_eq!(diff2.to_sat(), -((Amount::MAX_MONEY.to_sat() - 1) as i64));
 }

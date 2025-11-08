@@ -2,10 +2,8 @@
 
 //! SHA256 implementation.
 
-#[cfg(bench)]
-mod benches;
 mod crypto;
-#[cfg(bench)]
+#[cfg(test)]
 mod tests;
 
 use core::{cmp, convert, fmt};
@@ -48,14 +46,14 @@ impl HashEngine {
     /// Constructs a new [`HashEngine`] from a [`Midstate`].
     ///
     /// Please see docs on [`Midstate`] before using this function.
-    pub fn from_midstate(midstate: Midstate) -> HashEngine {
+    pub fn from_midstate(midstate: Midstate) -> Self {
         let mut ret = [0; 8];
         for (ret_val, midstate_bytes) in ret.iter_mut().zip(midstate.as_ref().bitcoin_as_chunks().0)
         {
             *ret_val = u32::from_be_bytes(*midstate_bytes);
         }
 
-        HashEngine { buffer: [0; BLOCK_SIZE], h: ret, bytes_hashed: midstate.bytes_hashed }
+        Self { buffer: [0; BLOCK_SIZE], h: ret, bytes_hashed: midstate.bytes_hashed }
     }
 
     /// Returns `true` if the midstate can be extracted from this engine.
@@ -128,7 +126,7 @@ impl Hash {
         e.input(&(8 * n_bytes_hashed).to_be_bytes());
         debug_assert_eq!(incomplete_block_len(&e), 0);
 
-        Hash(e.midstate_unchecked().bytes)
+        Self(e.midstate_unchecked().bytes)
     }
 
     /// Finalize a hash engine to obtain a hash.
@@ -150,14 +148,8 @@ impl Hash {
     /// Computes hash from `bytes` in `const` context.
     ///
     /// Warning: this function is inefficient. It should be only used in `const` context.
-    #[deprecated(since = "0.15.0", note = "use `Self::hash_unoptimized` instead")]
-    pub const fn const_hash(bytes: &[u8]) -> Self { Hash::hash_unoptimized(bytes) }
-
-    /// Computes hash from `bytes` in `const` context.
-    ///
-    /// Warning: this function is inefficient. It should be only used in `const` context.
     pub const fn hash_unoptimized(bytes: &[u8]) -> Self {
-        Hash(Midstate::compute_midstate_unoptimized(bytes, true).bytes)
+        Self(Midstate::compute_midstate_unoptimized(bytes, true).bytes)
     }
 }
 
@@ -169,11 +161,11 @@ impl Hash {
 /// It represents "partially hashed data" but does not itself have properties of cryptographic
 /// hashes. For example, when (ab)used as hashes, midstates are vulnerable to trivial
 /// length-extension attacks. They are typically used to optimize the computation of full hashes.
-/// For example, when implementing BIP-340 tagged hashes, which always begin by hashing the same
+/// For example, when implementing BIP-0340 tagged hashes, which always begin by hashing the same
 /// fixed 64-byte prefix, it makes sense to hash the prefix once, store the midstate as a constant,
 /// and hash any future data starting from the constant rather than from a fresh hash engine.
 ///
-/// For BIP-340 support we provide the [`sha256t`] module, and the [`sha256t_tag`] macro which will
+/// For BIP-0340 support we provide the [`sha256t`] module, and the [`sha256t_tag`] macro which will
 /// create the midstate for you in const context.
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Midstate {
@@ -185,7 +177,7 @@ pub struct Midstate {
 }
 
 impl Midstate {
-    /// Construct a new [`Midstate`] from the `state` and the `bytes_hashed` to get to that state.
+    /// Constructs a new [`Midstate`] from the `state` and the `bytes_hashed` to get to that state.
     ///
     /// # Panics
     ///
@@ -195,7 +187,7 @@ impl Midstate {
             panic!("bytes hashed is not a multiple of 64");
         }
 
-        Midstate { bytes: state, bytes_hashed }
+        Self { bytes: state, bytes_hashed }
     }
 
     /// Deconstructs the [`Midstate`], returning the underlying byte array and number of bytes hashed.

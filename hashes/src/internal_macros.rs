@@ -8,10 +8,10 @@
 ///
 /// # Parameters
 ///
-/// * `$bits` - number of bits this hash type has
+/// * `$bits` - the number of bits this hash type has
 /// * `$reverse` - `bool`  - `true` if the hash type should be displayed backwards, `false`
 ///   otherwise.
-/// * `$gen: $gent` - generic type(s) and trait bound(s)
+/// * `$gen: $gent` - the generic type(s) and trait bound(s)
 ///
 /// Restrictions on usage:
 ///
@@ -34,12 +34,6 @@ macro_rules! hash_trait_impls {
 
             fn from_byte_array(bytes: Self::Bytes) -> Self { Self::from_byte_array(bytes) }
 
-            #[allow(deprecated_in_future)] // Because of `FromSliceError`.
-            #[allow(deprecated)]           // Because of `from_slice`.
-            fn from_slice(sl: &[u8]) -> $crate::_export::_core::result::Result<Hash<$($gen),*>, $crate::FromSliceError> {
-                Self::from_slice(sl)
-            }
-
             fn to_byte_array(self) -> Self::Bytes { self.to_byte_array() }
 
             fn as_byte_array(&self) -> &Self::Bytes { self.as_byte_array() }
@@ -48,7 +42,7 @@ macro_rules! hash_trait_impls {
 }
 pub(crate) use hash_trait_impls;
 
-/// Creates a type called `Hash` and implements the standard general hashing interface for it.
+/// Constructs a type called `Hash` and implements the standard general hashing interface for it.
 ///
 /// The created type has a single field and will have all standard derives as well as an
 /// implementation of [`crate::Hash`].
@@ -57,7 +51,7 @@ pub(crate) use hash_trait_impls;
 ///
 /// * `$bits` - the number of bits of the hash type
 /// * `$reverse` - `true` if the hash should be displayed backwards, `false` otherwise
-/// * `$doc` - doc string to put on the type
+/// * `$doc` - the doc string to put on the type
 ///
 /// Restrictions on usage:
 ///
@@ -132,24 +126,6 @@ macro_rules! hash_type_no_default {
         impl Hash {
             /// Constructs a new hash from the underlying byte array.
             pub const fn from_byte_array(bytes: [u8; $bits / 8]) -> Self { Hash(bytes) }
-
-            /// Copies a byte slice into a hash object.
-            #[deprecated(since = "0.15.0", note = "use `from_byte_array` instead")]
-            #[allow(deprecated_in_future)] // Because of `FromSliceError`.
-            pub fn from_slice(
-                sl: &[u8],
-            ) -> $crate::_export::_core::result::Result<Hash, $crate::FromSliceError> {
-                if sl.len() != $bits / 8 {
-                    Err($crate::error::FromSliceError($crate::error::FromSliceErrorInner {
-                        expected: $bits / 8,
-                        got: sl.len(),
-                    }))
-                } else {
-                    let mut ret = [0; $bits / 8];
-                    ret.copy_from_slice(sl);
-                    Ok(Self::from_byte_array(ret))
-                }
-            }
 
             /// Returns the underlying byte array.
             pub const fn to_byte_array(self) -> [u8; $bits / 8] { self.0 }

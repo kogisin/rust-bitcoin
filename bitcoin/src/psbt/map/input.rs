@@ -12,7 +12,7 @@ use crate::prelude::{btree_map, BTreeMap, Borrow, Box, ToOwned, Vec};
 use crate::psbt::map::Map;
 use crate::psbt::serialize::Deserialize;
 use crate::psbt::{error, raw, Error};
-use crate::script::ScriptBuf;
+use crate::script::{RedeemScriptBuf, ScriptSigBuf, TapScriptBuf, WitnessScriptBuf};
 use crate::sighash::{
     EcdsaSighashType, InvalidSighashTypeError, NonStandardSighashTypeError, SighashTypeParseError,
     TapSighashType,
@@ -33,7 +33,7 @@ const PSBT_IN_SIGHASH_TYPE: u64 = 0x03;
 const PSBT_IN_REDEEM_SCRIPT: u64 = 0x04;
 /// Type: Witness Script PSBT_IN_WITNESS_SCRIPT = 0x05
 const PSBT_IN_WITNESS_SCRIPT: u64 = 0x05;
-/// Type: BIP 32 Derivation Path PSBT_IN_BIP32_DERIVATION = 0x06
+/// Type: BIP-0032 Derivation Path PSBT_IN_BIP32_DERIVATION = 0x06
 const PSBT_IN_BIP32_DERIVATION: u64 = 0x06;
 /// Type: Finalized scriptSig PSBT_IN_FINAL_SCRIPTSIG = 0x07
 const PSBT_IN_FINAL_SCRIPTSIG: u64 = 0x07;
@@ -51,9 +51,9 @@ const PSBT_IN_HASH256: u64 = 0x0d;
 const PSBT_IN_TAP_KEY_SIG: u64 = 0x13;
 /// Type: Taproot Signature in Script Spend PSBT_IN_TAP_SCRIPT_SIG = 0x14
 const PSBT_IN_TAP_SCRIPT_SIG: u64 = 0x14;
-/// Type: Taproot Leaf Script PSBT_IN_TAP_LEAF_SCRIPT = 0x14
+/// Type: Taproot Leaf Script PSBT_IN_TAP_LEAF_SCRIPT = 0x15
 const PSBT_IN_TAP_LEAF_SCRIPT: u64 = 0x15;
-/// Type: Taproot Key BIP 32 Derivation Path PSBT_IN_TAP_BIP32_DERIVATION = 0x16
+/// Type: Taproot Key BIP-0032 Derivation Path PSBT_IN_TAP_BIP32_DERIVATION = 0x16
 const PSBT_IN_TAP_BIP32_DERIVATION: u64 = 0x16;
 /// Type: Taproot Internal Key PSBT_IN_TAP_INTERNAL_KEY = 0x17
 const PSBT_IN_TAP_INTERNAL_KEY: u64 = 0x17;
@@ -83,15 +83,15 @@ pub struct Input {
     /// must use the sighash type.
     pub sighash_type: Option<PsbtSighashType>,
     /// The redeem script for this input.
-    pub redeem_script: Option<ScriptBuf>,
+    pub redeem_script: Option<RedeemScriptBuf>,
     /// The witness script for this input.
-    pub witness_script: Option<ScriptBuf>,
+    pub witness_script: Option<WitnessScriptBuf>,
     /// A map from public keys needed to sign this input to their corresponding
     /// master key fingerprints and derivation paths.
     pub bip32_derivation: BTreeMap<secp256k1::PublicKey, KeySource>,
     /// The finalized, fully-constructed scriptSig with signatures and any other
     /// scripts necessary for this input to pass validation.
-    pub final_script_sig: Option<ScriptBuf>,
+    pub final_script_sig: Option<ScriptSigBuf>,
     /// The finalized, fully-constructed scriptWitness with signatures and any
     /// other scripts necessary for this input to pass validation.
     pub final_script_witness: Option<Witness>,
@@ -108,7 +108,7 @@ pub struct Input {
     /// Map of `<xonlypubkey>|<leafhash>` with signature.
     pub tap_script_sigs: BTreeMap<(XOnlyPublicKey, TapLeafHash), taproot::Signature>,
     /// Map of Control blocks to Script version pair.
-    pub tap_scripts: BTreeMap<ControlBlock, (ScriptBuf, LeafVersion)>,
+    pub tap_scripts: BTreeMap<ControlBlock, (TapScriptBuf, LeafVersion)>,
     /// Map of tap root x only keys to origin info and leaf hashes contained in it.
     pub tap_key_origins: BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>,
     /// Taproot Internal key.
@@ -169,7 +169,7 @@ impl FromStr for PsbtSighashType {
 
         // We accept non-standard sighash values.
         if let Ok(inner) = u32::from_str_radix(s.trim_start_matches("0x"), 16) {
-            return Ok(PsbtSighashType { inner });
+            return Ok(Self { inner });
         }
 
         Err(SighashTypeParseError { unrecognized: s.to_owned() })
@@ -177,13 +177,13 @@ impl FromStr for PsbtSighashType {
 }
 impl From<EcdsaSighashType> for PsbtSighashType {
     fn from(ecdsa_hash_ty: EcdsaSighashType) -> Self {
-        PsbtSighashType { inner: ecdsa_hash_ty as u32 }
+        Self { inner: ecdsa_hash_ty as u32 }
     }
 }
 
 impl From<TapSighashType> for PsbtSighashType {
     fn from(taproot_hash_ty: TapSighashType) -> Self {
-        PsbtSighashType { inner: taproot_hash_ty as u32 }
+        Self { inner: taproot_hash_ty as u32 }
     }
 }
 
@@ -202,7 +202,7 @@ impl PsbtSighashType {
     /// let _ecdsa_sighash_anyone_can_pay: PsbtSighashType = EcdsaSighashType::AllPlusAnyoneCanPay.into();
     /// let _tap_sighash_anyone_can_pay: PsbtSighashType = TapSighashType::AllPlusAnyoneCanPay.into();
     /// ```
-    pub const ALL: PsbtSighashType = PsbtSighashType { inner: 0x01 };
+    pub const ALL: Self = Self { inner: 0x01 };
 
     /// Returns the [`EcdsaSighashType`] if the [`PsbtSighashType`] can be
     /// converted to one.
@@ -224,7 +224,7 @@ impl PsbtSighashType {
     ///
     /// Allows construction of a non-standard or non-valid sighash flag
     /// ([`EcdsaSighashType`], [`TapSighashType`] respectively).
-    pub fn from_u32(n: u32) -> PsbtSighashType { PsbtSighashType { inner: n } }
+    pub fn from_u32(n: u32) -> Self { Self { inner: n } }
 
     /// Converts [`PsbtSighashType`] to a raw `u32` sighash flag.
     ///
@@ -250,7 +250,7 @@ impl Input {
     ///
     /// # Errors
     ///
-    /// If the `sighash_type` field is set to a invalid Taproot sighash value.
+    /// If the `sighash_type` field is set to an invalid Taproot sighash value.
     pub fn taproot_hash_ty(&self) -> Result<TapSighashType, InvalidSighashTypeError> {
         self.sighash_type
             .map(|sighash_type| sighash_type.taproot_hash_ty())
@@ -283,12 +283,12 @@ impl Input {
             }
             PSBT_IN_REDEEM_SCRIPT => {
                 impl_psbt_insert_pair! {
-                    self.redeem_script <= <raw_key: _>|<raw_value: ScriptBuf>
+                    self.redeem_script <= <raw_key: _>|<raw_value: RedeemScriptBuf>
                 }
             }
             PSBT_IN_WITNESS_SCRIPT => {
                 impl_psbt_insert_pair! {
-                    self.witness_script <= <raw_key: _>|<raw_value: ScriptBuf>
+                    self.witness_script <= <raw_key: _>|<raw_value: WitnessScriptBuf>
                 }
             }
             PSBT_IN_BIP32_DERIVATION => {
@@ -298,7 +298,7 @@ impl Input {
             }
             PSBT_IN_FINAL_SCRIPTSIG => {
                 impl_psbt_insert_pair! {
-                    self.final_script_sig <= <raw_key: _>|<raw_value: ScriptBuf>
+                    self.final_script_sig <= <raw_key: _>|<raw_value: ScriptSigBuf>
                 }
             }
             PSBT_IN_FINAL_SCRIPTWITNESS => {
@@ -338,7 +338,7 @@ impl Input {
             }
             PSBT_IN_TAP_LEAF_SCRIPT => {
                 impl_psbt_insert_pair! {
-                    self.tap_scripts <= <raw_key: ControlBlock>|< raw_value: (ScriptBuf, LeafVersion)>
+                    self.tap_scripts <= <raw_key: ControlBlock>|< raw_value: (TapScriptBuf, LeafVersion)>
                 }
             }
             PSBT_IN_TAP_BIP32_DERIVATION => {

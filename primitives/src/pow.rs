@@ -2,7 +2,10 @@
 
 //! Proof-of-work related integer types.
 
+use core::convert::Infallible;
 use core::fmt;
+
+use internals::write_err;
 
 /// Encoding of 256-bit target as 32-bit float.
 ///
@@ -48,8 +51,84 @@ impl fmt::UpperHex for CompactTarget {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::UpperHex::fmt(&self.0, f) }
 }
 
+encoding::encoder_newtype! {
+    /// The encoder for the [`CompactTarget`] type.
+    pub struct CompactTargetEncoder(encoding::ArrayEncoder<4>);
+}
+
+impl encoding::Encodable for CompactTarget {
+    type Encoder<'e> = CompactTargetEncoder;
+    fn encoder(&self) -> Self::Encoder<'_> {
+        CompactTargetEncoder(encoding::ArrayEncoder::without_length_prefix(
+            self.to_consensus().to_le_bytes(),
+        ))
+    }
+}
+
+/// The decoder for the [`CompactTarget`] type.
+pub struct CompactTargetDecoder(encoding::ArrayDecoder<4>);
+
+impl CompactTargetDecoder {
+    /// Constructs a new [`CompactTarget`] decoder.
+    pub fn new() -> Self { Self(encoding::ArrayDecoder::new()) }
+}
+
+impl Default for CompactTargetDecoder {
+    fn default() -> Self { Self::new() }
+}
+
+impl encoding::Decoder for CompactTargetDecoder {
+    type Output = CompactTarget;
+    type Error = CompactTargetDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        Ok(self.0.push_bytes(bytes)?)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> {
+        let n = u32::from_le_bytes(self.0.end()?);
+        Ok(CompactTarget::from_consensus(n))
+    }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+impl encoding::Decodable for CompactTarget {
+    type Decoder = CompactTargetDecoder;
+    fn decoder() -> Self::Decoder { CompactTargetDecoder(encoding::ArrayDecoder::<4>::new()) }
+}
+
+/// An error consensus decoding an `CompactTarget`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactTargetDecoderError(encoding::UnexpectedEofError);
+
+impl From<Infallible> for CompactTargetDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+impl From<encoding::UnexpectedEofError> for CompactTargetDecoderError {
+    fn from(e: encoding::UnexpectedEofError) -> Self { Self(e) }
+}
+
+impl fmt::Display for CompactTargetDecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write_err!(f, "sequence decoder error"; self.0)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for CompactTargetDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "alloc")]
+    use alloc::format;
+
     use super::*;
 
     #[test]
@@ -63,6 +142,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "alloc")]
     fn compact_target_formatting() {
         let compact_target = CompactTarget::from_consensus(0x1d00_ffff);
         assert_eq!(format!("{:x}", compact_target), "1d00ffff");

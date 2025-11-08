@@ -12,13 +12,13 @@
 //!
 //! ```
 //! use bitcoin::network::Params;
-//! use bitcoin::{Script, ScriptBuf, Network, Target};
+//! use bitcoin::{WitnessScript, WitnessScriptBuf, Network, Target};
 //!
 //! const POW_TARGET_SPACING: u64 = 120; // Two minutes.
 //!
 //! pub struct CustomParams {
 //!     params: Params,
-//!     challenge_script: ScriptBuf,
+//!     challenge_script: WitnessScriptBuf,
 //! }
 //!
 //! impl CustomParams {
@@ -27,8 +27,8 @@
 //!         let mut params = Params::new(Network::Signet);
 //!         params.pow_target_spacing = POW_TARGET_SPACING;
 //!
-//!         // This would be something real (see BIP-325).
-//!         let challenge_script = ScriptBuf::new();
+//!         // This would be something real (see BIP-00325).
+//!         let challenge_script = WitnessScriptBuf::new();
 //!
 //!         Self {
 //!             params,
@@ -37,7 +37,7 @@
 //!     }
 //!
 //!     /// Returns the custom signet challenge script.
-//!     pub fn challenge_script(&self) -> &Script { &self.challenge_script }
+//!     pub fn challenge_script(&self) -> &WitnessScript { &self.challenge_script }
 //! }
 //!
 //! impl AsRef<Params> for CustomParams {
@@ -60,12 +60,11 @@
 //! # }
 //! ```
 
-use units::{BlockHeight, BlockHeightInterval};
-
 use super::{Network, TestnetVersion};
 #[cfg(doc)]
 use crate::pow::CompactTarget;
 use crate::pow::Target;
+use crate::{BlockHeight, BlockHeightInterval};
 
 /// Parameters that influence chain consensus.
 #[non_exhaustive]
@@ -73,16 +72,16 @@ use crate::pow::Target;
 pub struct Params {
     /// Network for which parameters are valid.
     pub network: Network,
-    /// Time when BIP16 becomes active.
+    /// Time when BIP-0016 becomes active.
     pub bip16_time: u32,
-    /// Block height at which BIP34 becomes active.
+    /// Block height at which BIP-0034 becomes active.
     pub bip34_height: BlockHeight,
-    /// Block height at which BIP65 becomes active.
+    /// Block height at which BIP-0065 becomes active.
     pub bip65_height: BlockHeight,
-    /// Block height at which BIP66 becomes active.
+    /// Block height at which BIP-0066 becomes active.
     pub bip66_height: BlockHeight,
     /// Minimum blocks including miner confirmation of the total of 2016 blocks in a retargeting period,
-    /// (nPowTargetTimespan / nPowTargetSpacing) which is also used for BIP9 deployments.
+    /// (nPowTargetTimespan / nPowTargetSpacing) which is also used for BIP-0009 deployments.
     /// Examples: 1916 for 95%, 1512 for testchains.
     pub rule_change_activation_threshold: BlockHeightInterval,
     /// Number of blocks with the same set of rules.
@@ -121,7 +120,7 @@ pub struct Params {
 /// [using-statics-or-consts]: <https://doc.rust-lang.org/reference/items/static-items.html#using-statics-or-consts>
 pub static MAINNET: Params = Params::MAINNET;
 /// The testnet3 parameters.
-#[deprecated(since = "0.33.0", note = "use `TESTNET3` instead")]
+#[deprecated(since = "TBD", note = "use `TESTNET3` instead")]
 pub static TESTNET: Params = Params::TESTNET3;
 /// The testnet3 parameters.
 pub static TESTNET3: Params = Params::TESTNET3;
@@ -135,10 +134,10 @@ pub static REGTEST: Params = Params::REGTEST;
 #[allow(deprecated)] // For `pow_limit`.
 impl Params {
     /// The mainnet parameters (alias for `Params::MAINNET`).
-    pub const BITCOIN: Params = Params::MAINNET;
+    pub const BITCOIN: Self = Self::MAINNET;
 
     /// The mainnet parameters.
-    pub const MAINNET: Params = Params {
+    pub const MAINNET: Self = Self {
         network: Network::Bitcoin,
         bip16_time: 1333238400,                      // Apr 1 2012
         bip34_height: BlockHeight::from_u32(227931), // 000000000000024b89b42a942fe0d9fea3bb44ab7bd1b19115dd6a759c0808b8
@@ -155,8 +154,8 @@ impl Params {
     };
 
     /// The testnet3 parameters.
-    #[deprecated(since = "0.33.0", note = "use `TESTNET3` instead")]
-    pub const TESTNET: Params = Params {
+    #[deprecated(since = "TBD", note = "use `TESTNET3` instead")]
+    pub const TESTNET: Self = Self {
         network: Network::Testnet(TestnetVersion::V3),
         bip16_time: 1333238400,                      // Apr 1 2012
         bip34_height: BlockHeight::from_u32(21111), // 0000000023b3a96d3484e5abb3755c413e7d41500f8e2a5c3f0dd01299cd8ef8
@@ -173,7 +172,7 @@ impl Params {
     };
 
     /// The testnet3 parameters.
-    pub const TESTNET3: Params = Params {
+    pub const TESTNET3: Self = Self {
         network: Network::Testnet(TestnetVersion::V3),
         bip16_time: 1333238400,                      // Apr 1 2012
         bip34_height: BlockHeight::from_u32(21111), // 0000000023b3a96d3484e5abb3755c413e7d41500f8e2a5c3f0dd01299cd8ef8
@@ -190,7 +189,7 @@ impl Params {
     };
 
     /// The testnet4 parameters.
-    pub const TESTNET4: Params = Params {
+    pub const TESTNET4: Self = Self {
         network: Network::Testnet(TestnetVersion::V4),
         bip16_time: 1333238400, // Apr 1 2012
         bip34_height: BlockHeight::from_u32(1),
@@ -207,7 +206,7 @@ impl Params {
     };
 
     /// The signet parameters.
-    pub const SIGNET: Params = Params {
+    pub const SIGNET: Self = Self {
         network: Network::Signet,
         bip16_time: 1333238400, // Apr 1 2012
         bip34_height: BlockHeight::from_u32(1),
@@ -224,7 +223,7 @@ impl Params {
     };
 
     /// The regtest parameters.
-    pub const REGTEST: Params = Params {
+    pub const REGTEST: Self = Self {
         network: Network::Regtest,
         bip16_time: 1333238400,                         // Apr 1 2012
         bip34_height: BlockHeight::from_u32(100000000), // not activated on regtest
@@ -240,14 +239,14 @@ impl Params {
         no_pow_retargeting: true,
     };
 
-    /// Creates parameters set for the given network.
+    /// Constructs parameters set for the given network.
     pub const fn new(network: Network) -> Self {
         match network {
-            Network::Bitcoin => Params::MAINNET,
-            Network::Testnet(TestnetVersion::V3) => Params::TESTNET3,
-            Network::Testnet(TestnetVersion::V4) => Params::TESTNET4,
-            Network::Signet => Params::SIGNET,
-            Network::Regtest => Params::REGTEST,
+            Network::Bitcoin => Self::MAINNET,
+            Network::Testnet(TestnetVersion::V3) => Self::TESTNET3,
+            Network::Testnet(TestnetVersion::V4) => Self::TESTNET4,
+            Network::Signet => Self::SIGNET,
+            Network::Regtest => Self::REGTEST,
         }
     }
 
@@ -273,8 +272,8 @@ impl From<&Network> for &'static Params {
     fn from(value: &Network) -> Self { value.params() }
 }
 
-impl AsRef<Params> for Params {
-    fn as_ref(&self) -> &Params { self }
+impl AsRef<Self> for Params {
+    fn as_ref(&self) -> &Self { self }
 }
 
 impl AsRef<Params> for Network {

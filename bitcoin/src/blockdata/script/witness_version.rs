@@ -1,21 +1,21 @@
-//! The segregated witness version byte as defined by [BIP141].
+//! The segregated witness version byte as defined by [BIP-0141].
 //!
-//! > A scriptPubKey (or redeemScript as defined in BIP16/P2SH) that consists of a 1-byte push
+//! > A scriptPubKey (or redeemScript as defined in BIP-0016/P2SH) that consists of a 1-byte push
 //! > opcode (for 0 to 16) followed by a data push between 2 and 40 bytes gets a new special
 //! > meaning. The value of the first push is called the "version byte". The following byte
 //! > vector pushed is called the "witness program".
 //!
-//! [BIP141]: <https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki>
+//! [BIP-0141]: <https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki>
 
 use core::convert::Infallible;
 use core::fmt;
 use core::str::FromStr;
 
 use internals::write_err;
-use units::parse::{self, ParseIntError};
 
 use crate::opcodes::all::*;
 use crate::opcodes::Opcode;
+use crate::parse_int::{self, ParseIntError};
 use crate::script::Instruction;
 
 /// Version of the segregated witness program.
@@ -82,8 +82,8 @@ impl FromStr for WitnessVersion {
     type Err = FromStrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let version: u8 = parse::int_from_str(s)?;
-        Ok(WitnessVersion::try_from(version)?)
+        let version: u8 = parse_int::int_from_str(s)?;
+        Ok(Self::try_from(version)?)
     }
 }
 
@@ -121,9 +121,9 @@ impl TryFrom<Opcode> for WitnessVersion {
 
     fn try_from(opcode: Opcode) -> Result<Self, Self::Error> {
         match opcode.to_u8() {
-            0 => Ok(WitnessVersion::V0),
-            version if version >= OP_PUSHNUM_1.to_u8() && version <= OP_PUSHNUM_16.to_u8() =>
-                WitnessVersion::try_from(version - OP_PUSHNUM_1.to_u8() + 1),
+            0 => Ok(Self::V0),
+            version if version >= OP_1.to_u8() && version <= OP_16.to_u8() =>
+                Self::try_from(version - OP_1.to_u8() + 1),
             invalid => Err(TryFromError { invalid }),
         }
     }
@@ -134,18 +134,18 @@ impl TryFrom<Instruction<'_>> for WitnessVersion {
 
     fn try_from(instruction: Instruction) -> Result<Self, Self::Error> {
         match instruction {
-            Instruction::Op(op) => Ok(WitnessVersion::try_from(op)?),
-            Instruction::PushBytes(bytes) if bytes.is_empty() => Ok(WitnessVersion::V0),
+            Instruction::Op(op) => Ok(Self::try_from(op)?),
+            Instruction::PushBytes(bytes) if bytes.is_empty() => Ok(Self::V0),
             Instruction::PushBytes(_) => Err(TryFromInstructionError::DataPush),
         }
     }
 }
 
 impl From<WitnessVersion> for Opcode {
-    fn from(version: WitnessVersion) -> Opcode {
+    fn from(version: WitnessVersion) -> Self {
         match version {
             WitnessVersion::V0 => OP_PUSHBYTES_0,
-            no => Opcode::from(OP_PUSHNUM_1.to_u8() + no.to_num() - 1),
+            no => Self::from(OP_1.to_u8() + no.to_num() - 1),
         }
     }
 }
@@ -199,7 +199,7 @@ impl From<TryFromError> for FromStrError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TryFromInstructionError {
-    /// Cannot not convert OP to a witness version.
+    /// Cannot convert OP to a witness version.
     TryFrom(TryFromError),
     /// Cannot create a witness version from non-zero data push.
     DataPush,

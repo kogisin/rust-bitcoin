@@ -99,10 +99,10 @@ impl MerkleBlock {
         let matches: Vec<bool> = block_txids.iter().map(match_txids).collect();
 
         let pmt = PartialMerkleTree::from_txids(block_txids, &matches);
-        MerkleBlock { header: *header, txn: pmt }
+        Self { header: *header, txn: pmt }
     }
 
-    /// Extract the matching txid's represented by this partial Merkle tree
+    /// Extracts the matching txid's represented by this partial Merkle tree
     /// and their respective indices within the partial tree.
     /// returns Ok(()) on success, or error in case of failure
     pub fn extract_matches(
@@ -129,7 +129,7 @@ impl Encodable for MerkleBlock {
 
 impl Decodable for MerkleBlock {
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-        Ok(MerkleBlock {
+        Ok(Self {
             header: Decodable::consensus_decode(r)?,
             txn: Decodable::consensus_decode(r)?,
         })
@@ -163,11 +163,11 @@ impl Decodable for MerkleBlock {
 ///   N <= 1 + matched_transactions*tree_height
 ///
 /// The serialization format:
-///  - uint32     total_transactions (4 bytes)
-///  - varint     number of hashes   (1-3 bytes)
-///  - uint256[]  hashes in depth-first order (<= 32*N bytes)
-///  - varint     number of bytes of flag bits (1-3 bytes)
-///  - byte[]     flag bits, packed per 8 in a byte, least significant bit first (<= 2*N-1 bits)
+///  - uint32       total_transactions (4 bytes)
+///  - CompactSize  number of hashes   (1-3 bytes)
+///  - uint256[]    hashes in depth-first order (<= 32*N bytes)
+///  - CompactSize  number of bytes of flag bits (1-3 bytes)
+///  - byte[]       flag bits, packed per 8 in a byte, least significant bit first (<= 2*N-1 bits)
 ///
 /// The size constraints follow from this.
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -201,7 +201,7 @@ impl PartialMerkleTree {
     /// # Examples
     ///
     /// ```rust
-    /// use bitcoin::hash_types::Txid;
+    /// use bitcoin::Txid;
     /// use bitcoin::merkle_tree::PartialMerkleTree;
     ///
     /// // Block 80000
@@ -223,7 +223,7 @@ impl PartialMerkleTree {
         assert_ne!(txids.len(), 0);
         assert_eq!(txids.len(), matches.len());
 
-        let mut pmt = PartialMerkleTree {
+        let mut pmt = Self {
             num_transactions: txids.len() as u32,
             bits: Vec::with_capacity(txids.len()),
             hashes: vec![],
@@ -235,7 +235,7 @@ impl PartialMerkleTree {
         pmt
     }
 
-    /// Extract the matching txid's represented by this partial Merkle tree
+    /// Extracts the matching txid's represented by this partial Merkle tree
     /// and their respective indices within the partial tree.
     /// returns the Merkle root, or error in case of failure
     pub fn extract_matches(
@@ -271,7 +271,7 @@ impl PartialMerkleTree {
             self.traverse_and_extract(height, 0, &mut bits_used, &mut hash_used, matches, indexes)?;
         // Verify that all bits were consumed (except for the padding caused by
         // serializing it as a byte sequence)
-        if (bits_used + 7) / 8 != (self.bits.len() as u32 + 7) / 8 {
+        if bits_used.div_ceil(8) != self.bits.len().div_ceil(8) as u32 {
             return Err(NotAllBitsConsumed);
         }
         // Verify that all hashes were consumed
@@ -297,7 +297,7 @@ impl PartialMerkleTree {
         (self.num_transactions + (1 << height) - 1) >> height
     }
 
-    /// Calculate the hash of a node in the Merkle tree (at leaf level: the txid's themselves)
+    /// Calculates the hash of a node in the Merkle tree (at leaf level: the txid's themselves)
     fn calc_hash(&self, height: u32, pos: u32, txids: &[Txid]) -> TxMerkleNode {
         if height == 0 {
             // Hash at height 0 is the txid itself
@@ -409,7 +409,7 @@ impl Encodable for PartialMerkleTree {
         let mut ret = self.num_transactions.consensus_encode(w)?;
         ret += self.hashes.consensus_encode(w)?;
 
-        let nb_bytes_for_bits = (self.bits.len() + 7) / 8;
+        let nb_bytes_for_bits = self.bits.len().div_ceil(8);
         ret += w.emit_compact_size(nb_bytes_for_bits)?;
         for chunk in self.bits.chunks(8) {
             let mut byte = 0u8;
@@ -445,7 +445,7 @@ impl Decodable for PartialMerkleTree {
             }
         }
 
-        Ok(PartialMerkleTree { num_transactions, hashes, bits })
+        Ok(Self { num_transactions, hashes, bits })
     }
 }
 
@@ -489,8 +489,8 @@ impl fmt::Display for MerkleBlockError {
             NoTransactions => write!(f, "partial Merkle tree contains no transactions"),
             TooManyTransactions => write!(f, "too many transactions"),
             TooManyHashes => write!(f, "proof contains more hashes than transactions"),
-            NotEnoughBits => write!(f, "proof contains less bits than hashes"),
-            NotAllBitsConsumed => write!(f, "not all bit were consumed"),
+            NotEnoughBits => write!(f, "proof contains fewer bits than hashes"),
+            NotAllBitsConsumed => write!(f, "not all bits were consumed"),
             NotAllHashesConsumed => write!(f, "not all hashes were consumed"),
             BitsArrayOverflow => write!(f, "overflowed the bits array"),
             HashesArrayOverflow => write!(f, "overflowed the hashes array"),
@@ -515,7 +515,7 @@ impl std::error::Error for MerkleBlockError {
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for PartialMerkleTree {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(PartialMerkleTree {
+        Ok(Self {
             num_transactions: u.arbitrary()?,
             bits: Vec::<bool>::arbitrary(u)?,
             hashes: Vec::<TxMerkleNode>::arbitrary(u)?,
@@ -526,7 +526,7 @@ impl<'a> Arbitrary<'a> for PartialMerkleTree {
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for MerkleBlock {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(MerkleBlock { header: u.arbitrary()?, txn: u.arbitrary()? })
+        Ok(Self { header: u.arbitrary()?, txn: u.arbitrary()? })
     }
 }
 
@@ -540,7 +540,7 @@ mod tests {
     use super::*;
     use crate::block::{BlockUncheckedExt as _, Unchecked};
     use crate::consensus::encode;
-    use crate::hash_types::Txid;
+    use crate::Txid;
 
     #[cfg(feature = "rand-std")]
     macro_rules! pmt_tests {
@@ -588,7 +588,7 @@ mod tests {
         let mut height = 1;
         let mut ntx = tx_count;
         while ntx > 1 {
-            ntx = (ntx + 1) / 2;
+            ntx = ntx.div_ceil(2);
             height += 1;
         }
 
@@ -616,7 +616,7 @@ mod tests {
 
             // Verify PartialMerkleTree's size guarantees
             let n = cmp::min(tx_count, 1 + match_txid1.len() * height);
-            assert!(serialized.len() <= 10 + (258 * n + 7) / 8);
+            assert!(serialized.len() <= 10 + (258 * n).div_ceil(8));
 
             // Deserialize into a tester copy
             let pmt2: PartialMerkleTree =
@@ -681,7 +681,7 @@ mod tests {
         assert_eq!(mb_hex, encode::serialize(&mb).to_lower_hex_string().as_str());
     }
 
-    /// Constructs a new CMerkleBlock using a list of txids which will be found in the
+    /// Constructs a new MerkleBlock using a list of txids which will be found in the
     /// given block.
     #[test]
     fn merkleblock_construct_from_txids_found() {
@@ -701,7 +701,7 @@ mod tests {
 
         let merkle_block = MerkleBlock::from_block_with_predicate(&block, |t| txids.contains(t));
 
-        assert_eq!(merkle_block.header.block_hash(), block.clone().block_hash());
+        assert_eq!(merkle_block.header.block_hash(), block.block_hash());
 
         let mut matches: Vec<Txid> = vec![];
         let mut index: Vec<u32> = vec![];
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(index[1], 8);
     }
 
-    /// Constructs a new CMerkleBlock using a list of txids which will not be found in the given block
+    /// Constructs a new MerkleBlock using a list of txids which will not be found in the given block
     #[test]
     fn merkleblock_construct_from_txids_not_found() {
         let block = get_block_13b8a();
@@ -731,7 +731,7 @@ mod tests {
 
         let merkle_block = MerkleBlock::from_block_with_predicate(&block, |t| txids.contains(t));
 
-        assert_eq!(merkle_block.header.block_hash(), block.clone().block_hash());
+        assert_eq!(merkle_block.header.block_hash(), block.block_hash());
 
         let mut matches: Vec<Txid> = vec![];
         let mut index: Vec<u32> = vec![];

@@ -22,7 +22,7 @@ pub struct Hmac<T: Hash>(T);
 
 impl<T: Hash + str::FromStr> str::FromStr for Hmac<T> {
     type Err = <T as str::FromStr>::Err;
-    fn from_str(s: &str) -> Result<Self, Self::Err> { Ok(Hmac(str::FromStr::from_str(s)?)) }
+    fn from_str(s: &str) -> Result<Self, Self::Err> { Ok(Self(str::FromStr::from_str(s)?)) }
 }
 
 impl<T: Hash> PartialEq for Hmac<T> {
@@ -46,7 +46,7 @@ impl<T: HashEngine> HmacEngine<T> {
     /// # Panics
     ///
     /// Larger hashes will result in a panic.
-    pub fn new(key: &[u8]) -> HmacEngine<T>
+    pub fn new(key: &[u8]) -> Self
     where
         T: Default,
     {
@@ -54,7 +54,7 @@ impl<T: HashEngine> HmacEngine<T> {
 
         let mut ipad = [0x36u8; 128];
         let mut opad = [0x5cu8; 128];
-        let mut ret = HmacEngine { iengine: T::default(), oengine: T::default() };
+        let mut ret = Self { iengine: T::default(), oengine: T::default() };
 
         if key.len() > T::BLOCK_SIZE {
             let mut engine = T::default();
@@ -82,8 +82,8 @@ impl<T: HashEngine> HmacEngine<T> {
     }
 
     /// A special constructor giving direct access to the underlying "inner" and "outer" engines.
-    pub fn from_inner_engines(iengine: T, oengine: T) -> HmacEngine<T> {
-        HmacEngine { iengine, oengine }
+    pub fn from_inner_engines(iengine: T, oengine: T) -> Self {
+        Self { iengine, oengine }
     }
 }
 
@@ -121,12 +121,7 @@ impl<T: Hash> convert::AsRef<[u8]> for Hmac<T> {
 impl<T: Hash> Hash for Hmac<T> {
     type Bytes = T::Bytes;
 
-    fn from_byte_array(bytes: T::Bytes) -> Self { Hmac(T::from_byte_array(bytes)) }
-
-    #[allow(deprecated_in_future)] // Because of `FromSliceError`.
-    fn from_slice(sl: &[u8]) -> Result<Hmac<T>, crate::FromSliceError> {
-        T::from_slice(sl).map(Hmac)
-    }
+    fn from_byte_array(bytes: T::Bytes) -> Self { Self(T::from_byte_array(bytes)) }
 
     fn to_byte_array(self) -> Self::Bytes { self.0.to_byte_array() }
 
@@ -142,9 +137,9 @@ impl<T: Hash + Serialize> Serialize for Hmac<T> {
 
 #[cfg(feature = "serde")]
 impl<'de, T: Hash + Deserialize<'de>> Deserialize<'de> for Hmac<T> {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Hmac<T>, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let bytes = Deserialize::deserialize(d)?;
-        Ok(Hmac(bytes))
+        Ok(Self(bytes))
     }
 }
 
@@ -314,42 +309,5 @@ mod tests {
                  fffb8088ccf85497121ad4499e0845b876f6dd6640088a2f0b2d8a600bdf4c0c",
             )],
         );
-    }
-}
-
-#[cfg(bench)]
-mod benches {
-    use test::Bencher;
-
-    use crate::{sha256, HashEngine as _, HmacEngine};
-
-    #[bench]
-    pub fn hmac_sha256_10(bh: &mut Bencher) {
-        let mut engine = HmacEngine::<sha256::HashEngine>::new(&[]);
-        let bytes = [1u8; 10];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn hmac_sha256_1k(bh: &mut Bencher) {
-        let mut engine = HmacEngine::<sha256::HashEngine>::new(&[]);
-        let bytes = [1u8; 1024];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn hmac_sha256_64k(bh: &mut Bencher) {
-        let mut engine = HmacEngine::<sha256::HashEngine>::new(&[]);
-        let bytes = [1u8; 65536];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
     }
 }

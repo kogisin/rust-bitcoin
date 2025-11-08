@@ -8,8 +8,8 @@ use bitcoin::locktime::absolute;
 use bitcoin::secp256k1::{rand, Message, Secp256k1, SecretKey, Signing};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::{
-    transaction, Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
-    Txid, Witness,
+    transaction, Address, Amount, Network, OutPoint, ScriptPubKeyBuf, ScriptSigBuf, Sequence,
+    Transaction, TxIn, TxOut, Txid, Witness,
 };
 
 const DUMMY_UTXO_AMOUNT: Amount = Amount::from_sat_u32(20_000_000);
@@ -33,26 +33,26 @@ fn main() {
     // The input for the transaction we are constructing.
     let input = TxIn {
         previous_output: dummy_out_point, // The dummy output we are spending.
-        script_sig: ScriptBuf::default(), // For a p2wpkh script_sig is empty.
+        script_sig: ScriptSigBuf::default(), // For a p2wpkh script_sig is empty.
         sequence: Sequence::ENABLE_LOCKTIME_AND_RBF,
         witness: Witness::default(), // Filled in after signing.
     };
 
     // The spend output is locked to a key controlled by the receiver.
-    let spend = TxOut { value: SPEND_AMOUNT, script_pubkey: address.script_pubkey() };
+    let spend = TxOut { amount: SPEND_AMOUNT, script_pubkey: address.script_pubkey() };
 
     // The change output is locked to a key controlled by us.
     let change = TxOut {
-        value: CHANGE_AMOUNT,
-        script_pubkey: ScriptBuf::new_p2wpkh(wpkh), // Change comes back to us.
+        amount: CHANGE_AMOUNT,
+        script_pubkey: ScriptPubKeyBuf::new_p2wpkh(wpkh), // Change comes back to us.
     };
 
     // The transaction we want to sign and broadcast.
     let mut unsigned_tx = Transaction {
-        version: transaction::Version::TWO,  // Post BIP-68.
+        version: transaction::Version::TWO,  // Post BIP-0068.
         lock_time: absolute::LockTime::ZERO, // Ignore the locktime.
-        input: vec![input],                  // Input goes into index 0.
-        output: vec![spend, change],         // Outputs, order does not matter.
+        inputs: vec![input],                 // Input goes into index 0.
+        outputs: vec![spend, change],        // Outputs, order does not matter.
     };
     let input_index = 0;
 
@@ -112,19 +112,19 @@ fn receivers_address() -> Address {
 ///
 /// An utxo is described by the `OutPoint` (txid and index within the transaction that it was
 /// created). Using the out point one can get the transaction by `txid` and using the `vout` get the
-/// transaction value and script pubkey (`TxOut`) of the utxo.
+/// transaction amount and script pubkey (`TxOut`) of the utxo.
 ///
 /// This output is locked to keys that we control, in a real application this would be a valid
 /// output taken from a transaction that appears in the chain.
 fn dummy_unspent_transaction_output(wpkh: WPubkeyHash) -> (OutPoint, TxOut) {
-    let script_pubkey = ScriptBuf::new_p2wpkh(wpkh);
+    let script_pubkey = ScriptPubKeyBuf::new_p2wpkh(wpkh);
 
     let out_point = OutPoint {
         txid: Txid::from_byte_array([0xFF; 32]), // Arbitrary invalid dummy value.
         vout: 0,
     };
 
-    let utxo = TxOut { value: DUMMY_UTXO_AMOUNT, script_pubkey };
+    let utxo = TxOut { amount: DUMMY_UTXO_AMOUNT, script_pubkey };
 
     (out_point, utxo)
 }

@@ -1,61 +1,83 @@
 set positional-arguments
 
+# Once just v1.39.0 is widely deployed, simplify with the `read` function.
+NIGHTLY_VERSION := trim(shell('cat "$1"', justfile_directory() / "nightly-version"))
+
 alias ulf := update-lock-files
 
-default:
+_default:
   @just --list
 
-# Cargo build everything.
-build:
-  cargo build --workspace --all-targets --all-features
+# Run the given CI task using maintainer tools.
+[group('ci')]
+@ci task toolchain="stable" lock="recent":
+  {{justfile_directory()}}/contrib/ensure-maintainer-tools.sh
+  cp -f {{justfile_directory()}}/Cargo-{{lock}}.lock {{justfile_directory()}}/Cargo.lock
+  MAINTAINER_TOOLS_LOG_LEVEL=quiet rustup run {{toolchain}} {{justfile_directory()}}/.maintainer-tools/ci/run_task.sh {{task}}
 
-# Cargo check everything.
-check:
-  cargo check --workspace --all-targets --all-features
+# Test workspace with stable toolchain.
+[group('ci')]
+ci-stable: (ci "stable")
 
-# Lint everything.
-lint:
-  cargo +$(cat ./nightly-version) clippy --workspace --all-targets --all-features -- --deny warnings
-  # lint warnings get inhibited unless we use `--nocapture`
-  cargo test --quiet --workspace --doc -- --nocapture
-
-# Run cargo fmt
-fmt:
-  cargo +$(cat ./nightly-version) fmt --all
-
-# Check the formatting
-format:
-  cargo +$(cat ./nightly-version) fmt --all --check
+# Lint workspace.
+[group('ci')]
+ci-lint: (ci "lint" NIGHTLY_VERSION)
 
 # Generate documentation.
-docsrs *flags:
-  RUSTDOCFLAGS="--cfg docsrs -D warnings -D rustdoc::broken-intra-doc-links" cargo +$(cat ./nightly-version) doc --all-features {{flags}}
+[group('ci')]
+ci-docs: (ci "docs")
 
-# Quick and dirty CI useful for pre-push checks.
-sane: lint
-  cargo test --quiet --workspace --all-targets --no-default-features > /dev/null || exit 1
-  cargo test --quiet --workspace --all-targets > /dev/null || exit 1
-  cargo test --quiet --workspace --all-targets --all-features > /dev/null || exit 1
+# Generate documentation with nightly.
+[group('ci')]
+ci-docsrs: (ci "docsrs" NIGHTLY_VERSION)
 
-  # Make an attempt to catch feature gate problems in doctests
-  cargo test --manifest-path bitcoin/Cargo.toml --doc --no-default-features > /dev/null || exit 1
+# Run benchmarks.
+[group('ci')]
+ci-bench: (ci "bench")
+
+# Quick workspace lint.
+@lint:
+  cargo +{{NIGHTLY_VERSION}} clippy --quiet --workspace --all-targets --all-features -- --deny warnings
+
+# Quick workspace sanity check.
+@sane: lint
+  cargo test --quiet --workspace --all-targets --no-default-features
+  cargo test --quiet --workspace --all-targets --all-features
+
+# Format workspace.
+@fmt:
+  cargo +{{NIGHTLY_VERSION}} fmt --all
+
+# Generate documentation (accepts cargo doc args, e.g. --open).
+@docsrs *flags:
+  RUSTDOCFLAGS="--cfg docsrs -D warnings -D rustdoc::broken-intra-doc-links" cargo +{{NIGHTLY_VERSION}} doc --all-features {{flags}}
 
 # Check for API changes.
+[group('scripts')]
 check-api:
- contrib/check-for-api-changes.sh
+ {{justfile_directory()}}/contrib/check-for-api-changes.sh
 
 # Query the current API.
+[group('scripts')]
 @query-api crate command:
- contrib/api.sh $1 $2
+ {{justfile_directory()}}/contrib/api.sh $1 $2
 
 # Update the recent and minimal lock files.
+[group('scripts')]
 update-lock-files:
-  contrib/update-lock-files.sh
+ {{justfile_directory()}}/contrib/update-lock-files.sh
 
-# Install githooks
+# Install githooks.
+[group('scripts')]
 githooks-install:
-  ./contrib/copy-githooks.sh
+ {{justfile_directory()}}/contrib/copy-githooks.sh
 
-# Remove githooks
+# Remove githooks.
+[group('scripts')]
 githooks-remove:
-  ./contrib/copy-githooks.sh -r
+ {{justfile_directory()}}/contrib/copy-githooks.sh -r
+
+# Generate a dependency tree for workspace crates.
+[group('scripts')]
+gen-dep-tree:
+  {{justfile_directory()}}/contrib/gen-dep-tree.sh

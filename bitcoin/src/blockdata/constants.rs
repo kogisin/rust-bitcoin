@@ -79,8 +79,8 @@ fn bitcoin_genesis_tx(params: &Params) -> Transaction {
     let mut ret = Transaction {
         version: transaction::Version::ONE,
         lock_time: absolute::LockTime::ZERO,
-        input: vec![],
-        output: vec![],
+        inputs: vec![],
+        outputs: vec![],
     };
 
     let (in_script, out_script) = {
@@ -105,14 +105,14 @@ fn bitcoin_genesis_tx(params: &Params) -> Transaction {
         }
     };
 
-    ret.input.push(TxIn {
+    ret.inputs.push(TxIn {
         previous_output: OutPoint::COINBASE_PREVOUT,
         script_sig: in_script,
         sequence: Sequence::MAX,
         witness: Witness::default(),
     });
 
-    ret.output.push(TxOut { value: Amount::FIFTY_BTC, script_pubkey: out_script });
+    ret.outputs.push(TxOut { amount: Amount::FIFTY_BTC, script_pubkey: out_script });
 
     // end
     ret
@@ -203,7 +203,7 @@ impl ChainHash {
         101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0,
     ]);
     /// `ChainHash` for testnet3 bitcoin.
-    #[deprecated(since = "0.33.0", note = "use `TESTNET3` instead")]
+    #[deprecated(since = "TBD", note = "use `TESTNET3` instead")]
     pub const TESTNET: Self = Self([
         67, 73, 127, 215, 248, 38, 149, 113, 8, 244, 163, 15, 217, 206, 195, 174, 186, 121, 151,
         32, 132, 233, 14, 173, 1, 234, 51, 9, 0, 0, 0, 0,
@@ -259,7 +259,7 @@ impl ChainHash {
 
     /// Converts genesis block hash into `ChainHash`.
     pub fn from_genesis_block_hash(block_hash: crate::BlockHash) -> Self {
-        ChainHash(block_hash.to_byte_array())
+        Self(block_hash.to_byte_array())
     }
 }
 
@@ -277,17 +277,17 @@ mod test {
         let gen = bitcoin_genesis_tx(&Params::MAINNET);
 
         assert_eq!(gen.version, transaction::Version::ONE);
-        assert_eq!(gen.input.len(), 1);
-        assert_eq!(gen.input[0].previous_output.txid, Txid::COINBASE_PREVOUT);
-        assert_eq!(gen.input[0].previous_output.vout, 0xFFFFFFFF);
-        assert_eq!(serialize(&gen.input[0].script_sig),
+        assert_eq!(gen.inputs.len(), 1);
+        assert_eq!(gen.inputs[0].previous_output.txid, Txid::COINBASE_PREVOUT);
+        assert_eq!(gen.inputs[0].previous_output.vout, 0xFFFFFFFF);
+        assert_eq!(serialize(&gen.inputs[0].script_sig),
                    hex!("4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73"));
 
-        assert_eq!(gen.input[0].sequence, Sequence::MAX);
-        assert_eq!(gen.output.len(), 1);
-        assert_eq!(serialize(&gen.output[0].script_pubkey),
+        assert_eq!(gen.inputs[0].sequence, Sequence::MAX);
+        assert_eq!(gen.outputs.len(), 1);
+        assert_eq!(serialize(&gen.outputs[0].script_pubkey),
                    hex!("434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac"));
-        assert_eq!(gen.output[0].value, "50 BTC".parse::<Amount>().unwrap());
+        assert_eq!(gen.outputs[0].amount, "50 BTC".parse::<Amount>().unwrap());
         assert_eq!(gen.lock_time, absolute::LockTime::ZERO);
 
         assert_eq!(
@@ -388,7 +388,7 @@ mod test {
             Network::Testnet(TestnetVersion::V4) => {},
             Network::Signet => {},
             Network::Regtest => {},
-            _ => panic!("update ChainHash::using_genesis_block and chain_hash_genesis_block with new variants"),
+            _ => panic!("update ChainHash::using_genesis_block and chain_hash_and_genesis_block with new variants"),
         }
     }
 

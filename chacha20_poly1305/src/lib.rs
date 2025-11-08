@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! # ChaCha20 - Poly1305
+//! ChaCha20 - Poly1305
 //!
 //! Combine the ChaCha20 stream cipher with the Poly1305 message authentication code
 //! to form an authenticated encryption with additional data (AEAD) algorithm.
 
 #![no_std]
-// Experimental features we need.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
-#![cfg_attr(bench, feature(test))]
 // Coding conventions.
 #![warn(missing_docs)]
 #![warn(deprecated_in_future)]
@@ -16,17 +13,13 @@
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-#[cfg(bench)]
-mod benches;
-#[cfg(bench)]
-extern crate test;
 pub mod chacha20;
 pub mod poly1305;
 
@@ -50,7 +43,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
+            Self::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
         }
     }
 }
@@ -59,12 +52,12 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::UnauthenticatedAdditionalData => None,
+            Self::UnauthenticatedAdditionalData => None,
         }
     }
 }
 
-/// Encrypt and decrypt content along with a authentication tag.
+/// Encrypt and decrypt content along with an authentication tag.
 pub struct ChaCha20Poly1305 {
     key: Key,
     nonce: Nonce,
@@ -72,14 +65,14 @@ pub struct ChaCha20Poly1305 {
 
 impl ChaCha20Poly1305 {
     /// Make a new instance of a ChaCha20Poly1305 AEAD.
-    pub const fn new(key: Key, nonce: Nonce) -> Self { ChaCha20Poly1305 { key, nonce } }
+    pub const fn new(key: Key, nonce: Nonce) -> Self { Self { key, nonce } }
 
     /// Encrypt content in place and return the Poly1305 16-byte authentication tag.
     ///
     /// # Parameters
     ///
-    /// - `content` - Plaintext to be encrypted in place.
-    /// - `aad`     - Optional metadata covered by the authentication tag.
+    /// - `content` - the plaintext to be encrypted in place.
+    /// - `aad`     - the optional metadata covered by the authentication tag.
     ///
     /// # Returns
     ///

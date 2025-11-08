@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! # Rust Bitcoin I/O Library
+//! Rust Bitcoin I/O Library
 //!
 //! The [`std::io`] module is not exposed in `no-std` Rust so building `no-std` applications which
 //! require reading and writing objects via standard traits is not generally possible. Thus, this
@@ -14,8 +14,6 @@
 //! `github.com/rust-bitcoin/rust-bitcoin/bitcoin/examples/` directory.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-// Experimental features we need.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // Coding conventions.
 #![warn(missing_docs)]
 #![doc(test(attr(warn(unused))))]
@@ -24,7 +22,7 @@
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -43,13 +41,14 @@ mod hash;
 use alloc::vec::Vec;
 use core::cmp;
 
-#[cfg(feature = "std")]
-pub use bridge::{FromStd, ToStd};
+use encoding::Encoder;
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 pub use self::error::{Error, ErrorKind};
 #[cfg(feature = "hashes")]
 pub use self::hash::hash_reader;
+#[cfg(feature = "std")]
+pub use self::bridge::{FromStd, ToStd};
 
 /// Result type returned by functions in this crate.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -228,7 +227,7 @@ impl BufRead for &[u8] {
     fn consume(&mut self, amount: usize) { *self = &self[amount..] }
 }
 
-/// Wraps an in memory reader providing the `position` function.
+/// Wraps an in memory buffer providing `position` functionality for read and write.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Cursor<T> {
     inner: T,
@@ -238,9 +237,9 @@ pub struct Cursor<T> {
 impl<T: AsRef<[u8]>> Cursor<T> {
     /// Constructs a new `Cursor` by wrapping `inner`.
     #[inline]
-    pub const fn new(inner: T) -> Self { Cursor { inner, pos: 0 } }
+    pub const fn new(inner: T) -> Self { Self { inner, pos: 0 } }
 
-    /// Returns the position read up to thus far.
+    /// Returns the position read or written up to thus far.
     #[inline]
     pub const fn position(&self) -> u64 { self.pos }
 
@@ -249,7 +248,7 @@ impl<T: AsRef<[u8]>> Cursor<T> {
     /// This method allows seeking within the wrapped memory by setting the position.
     ///
     /// Note that setting a position that is larger than the buffer length will cause reads to
-    /// succeed by reading zero bytes.
+    /// succeed by reading zero bytes. Further, writes will be no-op zero length writes.
     #[inline]
     pub fn set_position(&mut self, position: u64) { self.pos = position; }
 
@@ -299,14 +298,26 @@ impl<T: AsRef<[u8]>> BufRead for Cursor<T> {
     #[inline]
     fn fill_buf(&mut self) -> Result<&[u8]> {
         let inner: &[u8] = self.inner.as_ref();
-        Ok(&inner[self.pos as usize..])
+        let pos = self.pos.min(inner.len() as u64) as usize;
+        Ok(&inner[pos..])
     }
 
     #[inline]
-    fn consume(&mut self, amount: usize) {
-        assert!(amount <= self.inner.as_ref().len());
-        self.pos += amount as u64;
+    fn consume(&mut self, amount: usize) { self.pos = self.pos.saturating_add(amount as u64); }
+}
+
+impl<T: AsMut<[u8]>> Write for Cursor<T> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        let write_slice = self.inner.as_mut();
+        let pos = cmp::min(self.pos, write_slice.len() as u64);
+        let amt = (&mut write_slice[(pos as usize)..]).write(buf)?;
+        self.pos += amt as u64;
+        Ok(amt)
     }
+
+    #[inline]
+    fn flush(&mut self) -> Result<()> { Ok(()) }
 }
 
 /// A generic trait describing an output stream.
@@ -408,10 +419,28 @@ pub const fn from_std<T>(std_io: T) -> FromStd<T> { FromStd::new(std_io) }
 #[inline]
 pub fn from_std_mut<T>(std_io: &mut T) -> &mut FromStd<T> { FromStd::new_mut(std_io) }
 
+/// Encodes a consensus_encoding object to an I/O writer.
+pub fn encode_to_writer<T, W>(object: &T, mut writer: W) -> Result<()>
+where
+    T: encoding::Encodable + ?Sized,
+    W: Write,
+{
+    let mut encoder = object.encoder();
+    loop {
+        writer.write_all(encoder.current_chunk())?;
+        if !encoder.advance() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(not(feature = "std"), feature = "alloc"))]
     use alloc::{string::ToString, vec};
+
+    use encoding::ArrayEncoder;
 
     use super::*;
 
@@ -516,5 +545,74 @@ mod tests {
         let read = take.read_to_end(&mut v).unwrap();
         assert_eq!(read, 32);
         assert_eq!(data[0..32], v[0..32]);
+    }
+
+    #[test]
+    fn cursor_fill_buf_past_end() {
+        let data = [1, 2, 3];
+        let mut cursor = Cursor::new(&data);
+        cursor.set_position(10);
+
+        let buf = cursor.fill_buf().unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn cursor_write() {
+        let data = [0x78, 0x56, 0x34, 0x12];
+
+        let mut buf = [0_u8; 4];
+        let mut cursor = Cursor::new(&mut buf);
+        let amt = cursor.write(&data).unwrap();
+
+        assert_eq!(buf, data);
+        assert_eq!(amt, 4);
+    }
+
+    #[test]
+    fn cursor_offset_write() {
+        let data = [0x78, 0x56, 0x34, 0x12];
+
+        let mut buf = [0_u8; 4];
+        let mut cursor = Cursor::new(&mut buf);
+        cursor.set_position(2);
+        let amt = cursor.write(&data).unwrap();
+
+        assert_eq!(buf, [0, 0, 0x78, 0x56]);
+        assert_eq!(amt, 2);
+    }
+
+    #[test]
+    fn cursor_consume_past_end() {
+        let data = [1, 2, 3];
+        let mut cursor = Cursor::new(&data);
+        cursor.set_position(10);
+
+        cursor.consume(5);
+        assert_eq!(cursor.position(), 15);
+    }
+
+    // Simple test type that implements Encodable.
+    struct TestData(u32);
+
+    impl encoding::Encodable for TestData {
+        type Encoder<'s>
+            = ArrayEncoder<4>
+        where
+            Self: 's;
+
+        fn encoder(&self) -> Self::Encoder<'_> {
+            ArrayEncoder::without_length_prefix(self.0.to_le_bytes())
+        }
+    }
+
+    #[test]
+    fn encode_io_writer() {
+        let data = TestData(0x1234_5678);
+
+        let mut buf = [0_u8; 4];
+        encode_to_writer(&data, buf.as_mut_slice()).unwrap();
+
+        assert_eq!(buf, [0x78, 0x56, 0x34, 0x12]);
     }
 }

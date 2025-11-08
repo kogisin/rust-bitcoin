@@ -8,14 +8,11 @@
 //! Types/tests were found using, and are ordered by, the output of: `git grep -l Serialize`.
 //!
 
-// In tests below `deserialize` is consensus deserialize while `serialize` is serde serialize, that
-// is why we have two different serialized data files for tests that use binary serialized input.
-//
 // To create a file with the expected serialized data do something like:
 //
 //  use std::fs::File;
 //  use std::io::Write;
-//  let script = ScriptBuf::from(vec![0u8, 1u8, 2u8]);
+//  let script = WitnessScriptBuf::from(vec![0u8, 1u8, 2u8]);
 //  let got = serialize(&script).unwrap();
 //  let mut file = File::create("/tmp/script_bincode").unwrap();
 //  file.write_all(&got).unwrap();
@@ -26,7 +23,6 @@ use std::collections::BTreeMap;
 
 use bincode::serialize;
 use bitcoin::bip32::{ChildNumber, KeySource, Xpriv, Xpub};
-use bitcoin::consensus::encode::deserialize;
 use bitcoin::hashes::{hash160, ripemd160, sha256, sha256d};
 use bitcoin::hex::FromHex;
 use bitcoin::locktime::{absolute, relative};
@@ -36,22 +32,10 @@ use bitcoin::sighash::{EcdsaSighashType, TapSighashType};
 use bitcoin::taproot::{self, ControlBlock, LeafVersion, TapTree, TaprootBuilder};
 use bitcoin::witness::Witness;
 use bitcoin::{
-    ecdsa, transaction, Address, Amount, Block, NetworkKind, OutPoint, PrivateKey, PublicKey,
-    ScriptBuf, Sequence, Target, Transaction, TxIn, TxOut, Txid, Work,
+    ecdsa, transaction, Address, Amount, NetworkKind, OutPoint, PrivateKey, PublicKey,
+    ScriptPubKeyBuf, ScriptSigBuf, Sequence, TapScriptBuf, Target, Transaction, TxIn, TxOut, Txid,
+    Work,
 };
-
-/// Implicitly does regression test for `BlockHeader` also.
-#[test]
-fn serde_regression_block() {
-    let segwit = include_bytes!(
-        "data/testnet_block_000000000000045e0b1660b6445b5e5c5ab63c9a4f956be7e1e69be04fa4497b.raw"
-    );
-    let block: Block = deserialize(segwit).unwrap();
-
-    let got = serialize(&block).unwrap();
-    let want = include_bytes!("data/serde/block_bincode");
-    assert_eq!(got, want)
-}
 
 #[test]
 fn serde_regression_absolute_lock_time_height() {
@@ -92,7 +76,7 @@ fn serde_regression_relative_lock_time_time() {
 
 #[test]
 fn serde_regression_script() {
-    let script = ScriptBuf::from(vec![0u8, 1u8, 2u8]);
+    let script = ScriptSigBuf::from(vec![0u8, 1u8, 2u8]);
 
     let got = serialize(&script).unwrap();
     let want = include_bytes!("data/serde/script_bincode") as &[_];
@@ -100,31 +84,16 @@ fn serde_regression_script() {
 }
 
 #[test]
-fn serde_regression_txin() {
-    let ser = include_bytes!("data/serde/txin_ser");
-    let txin: TxIn = deserialize(ser).unwrap();
+fn serde_regression_out_point() {
+    let out_point = OutPoint {
+        txid: "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389"
+            .parse::<Txid>()
+            .unwrap(),
+        vout: 1,
+    };
 
-    let got = serialize(&txin).unwrap();
-    let want = include_bytes!("data/serde/txin_bincode") as &[_];
-    assert_eq!(got, want)
-}
-
-#[test]
-fn serde_regression_txout() {
-    let txout = TxOut { value: Amount::MAX, script_pubkey: ScriptBuf::from(vec![0u8, 1u8, 2u8]) };
-
-    let got = serialize(&txout).unwrap();
-    let want = include_bytes!("data/serde/txout_bincode") as &[_];
-    assert_eq!(got, want)
-}
-
-#[test]
-fn serde_regression_transaction() {
-    let ser = include_bytes!("data/serde/transaction_ser");
-    let tx: Transaction = deserialize(ser).unwrap();
-
-    let got = serialize(&tx).unwrap();
-    let want = include_bytes!("data/serde/transaction_bincode") as &[_];
+    let got = serialize(&out_point).unwrap();
+    let want = include_bytes!("data/serde/out_point_bincode") as &[_];
     assert_eq!(got, want)
 }
 
@@ -228,14 +197,14 @@ fn serde_regression_psbt() {
     let tx = Transaction {
         version: transaction::Version::ONE,
         lock_time: absolute::LockTime::ZERO,
-        input: vec![TxIn {
+        inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389"
                     .parse::<Txid>()
                     .unwrap(),
                 vout: 1,
             },
-            script_sig: ScriptBuf::from_hex_no_length_prefix(
+            script_sig: ScriptSigBuf::from_hex_no_length_prefix(
                 "160014be18d152a9b012039daf3da7de4f53349eecb985",
             )
             .unwrap(),
@@ -245,9 +214,9 @@ fn serde_regression_psbt() {
             )
             .unwrap()]),
         }],
-        output: vec![TxOut {
-            value: Amount::from_sat(190_303_501_938).unwrap(),
-            script_pubkey: ScriptBuf::from_hex_no_length_prefix(
+        outputs: vec![TxOut {
+            amount: Amount::from_sat(190_303_501_938).unwrap(),
+            script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(
                 "a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587",
             )
             .unwrap(),
@@ -285,9 +254,9 @@ fn serde_regression_psbt() {
         },
         unsigned_tx: {
             let mut unsigned = tx.clone();
-            unsigned.input[0].previous_output.txid = tx.compute_txid();
-            unsigned.input[0].script_sig = ScriptBuf::new();
-            unsigned.input[0].witness = Witness::default();
+            unsigned.inputs[0].previous_output.txid = tx.compute_txid();
+            unsigned.inputs[0].script_sig = ScriptSigBuf::new();
+            unsigned.inputs[0].witness = Witness::default();
             unsigned
         },
         proprietary: proprietary.clone(),
@@ -296,8 +265,8 @@ fn serde_regression_psbt() {
         inputs: vec![Input {
             non_witness_utxo: Some(tx),
             witness_utxo: Some(TxOut {
-                value: Amount::from_sat(190_303_501_938).unwrap(),
-                script_pubkey: ScriptBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
+                amount: Amount::from_sat(190_303_501_938).unwrap(),
+                script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
             }),
             sighash_type: Some(PsbtSighashType::from("SIGHASH_SINGLE|SIGHASH_ANYONECANPAY".parse::<EcdsaSighashType>().unwrap())),
             redeem_script: Some(vec![0x51].into()),
@@ -324,7 +293,7 @@ fn serde_regression_psbt() {
         }],
     };
 
-    // Sanity, check we can roundtrip BIP-174 serialize.
+    // Sanity, check we can roundtrip BIP-0174 serialize.
     let serialized = psbt.serialize();
     Psbt::deserialize(&serialized).unwrap();
 
@@ -353,7 +322,7 @@ fn serde_regression_taproot_sig() {
 #[test]
 fn serde_regression_taptree() {
     let ver = LeafVersion::from_consensus(0).unwrap();
-    let script = ScriptBuf::from(vec![0u8, 1u8, 2u8]);
+    let script = TapScriptBuf::from(vec![0u8, 1u8, 2u8]);
     let mut builder = TaprootBuilder::new().add_leaf_with_ver(1, script.clone(), ver).unwrap();
     builder = builder.add_leaf(1, script).unwrap();
     let tree = TapTree::try_from(builder).unwrap();

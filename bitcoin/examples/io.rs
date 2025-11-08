@@ -17,7 +17,7 @@ fn main() {
     // Encode to a custom type by implementing `bitcoin_io` traits.
     encode_to_custom_type();
 
-    // Encode to a foreign custom type by using the `bitcoin_io::bridge::FromStd` wrapper.
+    // Encode to a foreign custom type by using the `bitcoin_io::FromStd` wrapper.
     encode_using_wrapper();
 }
 
@@ -46,7 +46,7 @@ fn encode_decode_from_stdlib_type() {
 ///
 /// To use the `Encodable` (and `Decodable`) traits you can implement the `bitcoin_io` traits.
 fn encode_to_custom_type() {
-    /// A byte counter - counts how many bytes where written to it.
+    /// A byte counter - counts how many bytes were written to it.
     struct WriteCounter {
         count: usize,
     }
@@ -75,7 +75,7 @@ fn encode_to_custom_type() {
 /// Encodes to a custom type by using the `bitcoin_io::bridge` module.
 ///
 /// If you have a type that you don't control that implements `std::io::Write` you can still encode
-/// to it by way of the `io::bridge::FromStd` wrapper.
+/// to it by way of the `io::FromStd` wrapper.
 fn encode_using_wrapper() {
     use pretend_this_is_some_other_crate::WriteCounter;
 
@@ -96,7 +96,7 @@ fn encode_using_wrapper() {
 }
 
 mod pretend_this_is_some_other_crate {
-    /// A byte counter - counts how many bytes where written to it.
+    /// A byte counter - counts how many bytes were written to it.
     pub struct WriteCounter {
         count: usize,
     }

@@ -19,7 +19,7 @@ pub struct Key([u8; 32]);
 
 impl Key {
     /// Constructs a new key.
-    pub const fn new(key: [u8; 32]) -> Self { Key(key) }
+    pub const fn new(key: [u8; 32]) -> Self { Self(key) }
 }
 
 /// A 96-bit initialization vector (IV), or nonce.
@@ -28,7 +28,7 @@ pub struct Nonce([u8; 12]);
 
 impl Nonce {
     /// Constructs a new nonce.
-    pub const fn new(nonce: [u8; 12]) -> Self { Nonce(nonce) }
+    pub const fn new(nonce: [u8; 12]) -> Self { Self(nonce) }
 }
 
 // Const validation trait for compile time check with max of 3.
@@ -63,7 +63,7 @@ impl UpTo3<3> for () {}
 ///
 /// In the future, a "blacklist" for the alignment option might be useful to
 /// disable it on architectures which definitely do not support SIMD in order to avoid
-/// needless memory inefficientcies.
+/// needless memory inefficiencies.
 #[derive(Clone, Copy, PartialEq)]
 struct U32x4([u32; 4]);
 
@@ -74,7 +74,7 @@ impl U32x4 {
         (0..4).for_each(|i| {
             result[i] = self.0[i].wrapping_add(rhs.0[i]);
         });
-        U32x4(result)
+        Self(result)
     }
 
     #[inline(always)]
@@ -83,7 +83,7 @@ impl U32x4 {
         (0..4).for_each(|i| {
             result[i] = self.0[i].rotate_left(n);
         });
-        U32x4(result)
+        Self(result)
     }
 
     #[inline(always)]
@@ -92,9 +92,9 @@ impl U32x4 {
         (): UpTo3<N>,
     {
         match N {
-            1 => U32x4([self.0[1], self.0[2], self.0[3], self.0[0]]),
-            2 => U32x4([self.0[2], self.0[3], self.0[0], self.0[1]]),
-            3 => U32x4([self.0[3], self.0[0], self.0[1], self.0[2]]),
+            1 => Self([self.0[1], self.0[2], self.0[3], self.0[0]]),
+            2 => Self([self.0[2], self.0[3], self.0[0], self.0[1]]),
+            3 => Self([self.0[3], self.0[0], self.0[1], self.0[2]]),
             _ => self, // Rotate by 0 is a no-op.
         }
     }
@@ -105,9 +105,9 @@ impl U32x4 {
         (): UpTo3<N>,
     {
         match N {
-            1 => U32x4([self.0[3], self.0[0], self.0[1], self.0[2]]),
-            2 => U32x4([self.0[2], self.0[3], self.0[0], self.0[1]]),
-            3 => U32x4([self.0[1], self.0[2], self.0[3], self.0[0]]),
+            1 => Self([self.0[3], self.0[0], self.0[1], self.0[2]]),
+            2 => Self([self.0[2], self.0[3], self.0[0], self.0[1]]),
+            3 => Self([self.0[1], self.0[2], self.0[3], self.0[0]]),
             _ => self, // Rotate by 0 is a no-op.
         }
     }
@@ -131,7 +131,7 @@ impl BitXor for U32x4 {
         (0..4).for_each(|i| {
             result[i] = self.0[i] ^ rhs.0[i];
         });
-        U32x4(result)
+        Self(result)
     }
 }
 
@@ -165,7 +165,7 @@ impl State {
         let n1 = u32::from_le_bytes([nonce.0[4], nonce.0[5], nonce.0[6], nonce.0[7]]);
         let n2 = u32::from_le_bytes([nonce.0[8], nonce.0[9], nonce.0[10], nonce.0[11]]);
 
-        State {
+        Self {
             matrix: [
                 U32x4([WORD_1, WORD_2, WORD_3, WORD_4]),
                 U32x4([k0, k1, k2, k3]),
@@ -193,7 +193,7 @@ impl State {
         [a, b, c, d]
     }
 
-    /// Perform a round on "columns" and then "diagonals" of the state.
+    /// Performs a round on "columns" and then "diagonals" of the state.
     ///
     /// The column quarter rounds are made up of indexes: `[0,4,8,12]`, `[1,5,9,13]`, `[2,6,10,14]`, `[3,7,11,15]`.
     /// The diagonals quarter rounds are made up of indexes: `[0,5,10,15]`, `[1,6,11,12]`, `[2,7,8,13]`, `[3,4,9,14]`.
@@ -222,7 +222,7 @@ impl State {
         [a, b, c, d]
     }
 
-    /// Transform the state by performing the ChaCha block function.
+    /// Transforms the state by performing the ChaCha block function.
     #[inline(always)]
     fn chacha_block(&mut self) {
         let mut working_state = self.matrix;
@@ -251,7 +251,7 @@ impl State {
 /// The ChaCha20 stream cipher from RFC8439.
 ///
 /// The 20-round IETF version uses a 96-bit nonce and 32-bit block counter. This is the
-/// variant used in the Bitcoin ecosystem, including BIP324.
+/// variant used in the Bitcoin ecosystem, including BIP-0324.
 pub struct ChaCha20 {
     /// Secret key shared by the parties communicating.
     key: Key,
@@ -268,15 +268,15 @@ impl ChaCha20 {
     pub const fn new(key: Key, nonce: Nonce, seek: u32) -> Self {
         let block_count = seek / 64;
         let seek_offset_bytes = (seek % 64) as usize;
-        ChaCha20 { key, nonce, block_count, seek_offset_bytes }
+        Self { key, nonce, block_count, seek_offset_bytes }
     }
 
     /// Make a new instance of ChaCha20 from a block in the keystream.
     pub const fn new_from_block(key: Key, nonce: Nonce, block: u32) -> Self {
-        ChaCha20 { key, nonce, block_count: block, seek_offset_bytes: 0 }
+        Self { key, nonce, block_count: block, seek_offset_bytes: 0 }
     }
 
-    /// Get the keystream for a specific block.
+    /// Gets the keystream for a specific block.
     #[inline(always)]
     fn keystream_at_block(&self, block: u32) -> [u8; 64] {
         let mut state = State::new(self.key, self.nonce, block);
@@ -331,16 +331,16 @@ impl ChaCha20 {
         }
     }
 
-    /// Get the keystream for specified block.
+    /// Gets the keystream for specified block.
     pub fn get_keystream(&self, block: u32) -> [u8; 64] { self.keystream_at_block(block) }
 
-    /// Update the index of the keystream to the given byte.
+    /// Updates the index of the keystream to the given byte.
     pub fn seek(&mut self, seek: u32) {
         self.block_count = seek / 64;
         self.seek_offset_bytes = (seek % 64) as usize;
     }
 
-    /// Update the index of the keystream to a block.
+    /// Updates the index of the keystream to a block.
     pub fn block(&mut self, block: u32) {
         self.block_count = block;
         self.seek_offset_bytes = 0;

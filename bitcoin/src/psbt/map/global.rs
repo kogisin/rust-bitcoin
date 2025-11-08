@@ -31,8 +31,8 @@ impl Map for Psbt {
                 // without witnesses.
                 let mut ret = Vec::new();
                 ret.extend(encode::serialize(&self.unsigned_tx.version));
-                ret.extend(encode::serialize(&self.unsigned_tx.input));
-                ret.extend(encode::serialize(&self.unsigned_tx.output));
+                ret.extend(encode::serialize(&self.unsigned_tx.inputs));
+                ret.extend(encode::serialize(&self.unsigned_tx.outputs));
                 ret.extend(encode::serialize(&self.unsigned_tx.lock_time));
                 ret
             },
@@ -96,8 +96,8 @@ impl Psbt {
                                     // properly.
                                     tx = Some(Transaction {
                                         version: Decodable::consensus_decode(&mut decoder)?,
-                                        input: Decodable::consensus_decode(&mut decoder)?,
-                                        output: Decodable::consensus_decode(&mut decoder)?,
+                                        inputs: Decodable::consensus_decode(&mut decoder)?,
+                                        outputs: Decodable::consensus_decode(&mut decoder)?,
                                         lock_time: Decodable::consensus_decode(&mut decoder)?,
                                     });
 
@@ -135,7 +135,7 @@ impl Psbt {
                                     path.push(ChildNumber::from(index))
                                 }
                                 let derivation = DerivationPath::from(path);
-                                // Keys, according to BIP-174, must be unique
+                                // Keys, according to BIP-0174, must be unique
                                 if xpub_map
                                     .insert(xpub, (Fingerprint::from(fingerprint), derivation))
                                     .is_some()
@@ -161,7 +161,7 @@ impl Psbt {
                                         ));
                                     }
                                     version = Some(Decodable::consensus_decode(&mut decoder)?);
-                                    // We only understand version 0 PSBTs. According to BIP-174 we
+                                    // We only understand version 0 PSBTs. According to BIP-0174 we
                                     // should throw an error if we see anything other than version 0.
                                     if version != Some(0) {
                                         return Err(Error::Version(
@@ -199,7 +199,7 @@ impl Psbt {
         }
 
         if let Some(tx) = tx {
-            Ok(Psbt {
+            Ok(Self {
                 unsigned_tx: tx,
                 version: version.unwrap_or(0),
                 xpub: xpub_map,

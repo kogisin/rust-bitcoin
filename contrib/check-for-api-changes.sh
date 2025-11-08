@@ -16,7 +16,7 @@ RUSTDOCFLAGS="-A rustdoc::broken_intra_doc_links"
 # `sort -n -u` doesn't work for some reason.
 SORT="sort --numeric-sort"
 
-# Sort order is effected by locale. See `man sort`.
+# Sort order is affected by locale. See `man sort`.
 # > Set LC_ALL=C to get the traditional sort order that uses native byte values.
 export LC_ALL=C
 
@@ -24,8 +24,19 @@ main() {
     need_nightly
     need_cargo_public_api
 
+    # If script is running in CI the recent lock file is copied into place
+    # already by the github action job. Locally be kind to the environment.
+    if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+        [ -f "Cargo.lock" ] && mv Cargo.lock Cargo.lock.tmp
+        cp Cargo-recent.lock Cargo.lock
+    fi
+
     # Just check crates that are stabilising.
+    generate_api_files "consensus_encoding"
     generate_api_files "units"
+    generate_api_files "primitives"
+
+    [ -f "Cargo.lock.tmp" ] && mv Cargo.lock.tmp Cargo.lock
 
     check_for_changes
 }
@@ -65,12 +76,12 @@ check_for_changes() {
 
 # Run cargo when --all-features is not used.
 run_cargo() {
-    RUSTDOCFLAGS="$RUSTDOCFLAGS" cargo +"$NIGHTLY" public-api --simplified "$@"
+    RUSTDOCFLAGS="$RUSTDOCFLAGS" cargo +"$NIGHTLY" --locked public-api --simplified "$@"
 }
 
 # Run cargo with all features enabled.
 run_cargo_all_features() {
-    cargo +"$NIGHTLY" public-api --simplified --all-features
+    cargo +"$NIGHTLY" --locked public-api --simplified --all-features
 }
 
 need_nightly() {

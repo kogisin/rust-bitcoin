@@ -65,24 +65,9 @@ where
     /// Constructs a new hash from the underlying byte array.
     pub const fn from_byte_array(bytes: [u8; 32]) -> Self { Self(PhantomData, bytes) }
 
-    /// Copies a byte slice into a hash object.
-    #[deprecated(since = "0.15.0", note = "use `from_byte_array` instead")]
-    #[allow(deprecated_in_future)] // Because of `FromSliceError`.
-    pub fn from_slice(sl: &[u8]) -> Result<Hash<T>, crate::FromSliceError> {
-        use crate::error::FromSliceErrorInner;
-
-        if sl.len() != 32 {
-            Err(crate::error::FromSliceError(FromSliceErrorInner { expected: 32, got: sl.len() }))
-        } else {
-            let mut ret = [0; 32];
-            ret.copy_from_slice(sl);
-            Ok(Self::from_byte_array(ret))
-        }
-    }
-
     /// Produces a hash from the current state of a given engine.
     pub fn from_engine(e: HashEngine<T>) -> Self {
-        Hash::from_byte_array(sha256::Hash::from_engine(e.0).to_byte_array())
+        Self::from_byte_array(sha256::Hash::from_engine(e.0).to_byte_array())
     }
 
     /// Constructs a new engine.
@@ -123,16 +108,16 @@ impl<T: Tag> Clone for Hash<T> {
     fn clone(&self) -> Self { *self }
 }
 impl<T: Tag> PartialEq for Hash<T> {
-    fn eq(&self, other: &Hash<T>) -> bool { self.as_byte_array() == other.as_byte_array() }
+    fn eq(&self, other: &Self) -> bool { self.as_byte_array() == other.as_byte_array() }
 }
 impl<T: Tag> Eq for Hash<T> {}
 impl<T: Tag> PartialOrd for Hash<T> {
-    fn partial_cmp(&self, other: &Hash<T>) -> Option<cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(cmp::Ord::cmp(self, other))
     }
 }
 impl<T: Tag> Ord for Hash<T> {
-    fn cmp(&self, other: &Hash<T>) -> cmp::Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         cmp::Ord::cmp(&self.as_byte_array(), &other.as_byte_array())
     }
 }
@@ -149,7 +134,7 @@ pub struct HashEngine<T>(sha256::HashEngine, PhantomData<T>);
 impl<T: Tag> Default for HashEngine<T> {
     fn default() -> Self {
         let tagged = sha256::HashEngine::from_midstate(T::MIDSTATE);
-        HashEngine(tagged, PhantomData)
+        Self(tagged, PhantomData)
     }
 }
 
@@ -207,7 +192,9 @@ macro_rules! sha256t_tag_constructor {
 
 #[cfg(test)]
 mod tests {
-    use crate::{sha256, sha256t};
+    #[cfg(feature = "alloc")]
+    use crate::sha256;
+    use crate::sha256t;
 
     const TEST_MIDSTATE: [u8; 32] = [
         156, 224, 228, 230, 124, 17, 108, 57, 56, 179, 202, 242, 195, 15, 80, 137, 211, 243, 147,
@@ -226,8 +213,10 @@ mod tests {
         "ed1382037800c9dd938dd8854f1a8863bcdeb6705069b4b56a66ec22519d5829";
 
     #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+    #[cfg(feature = "alloc")]
     pub struct TestHashTag;
 
+    #[cfg(feature = "alloc")]
     impl sha256t::Tag for TestHashTag {
         const MIDSTATE: sha256::Midstate = sha256::Midstate::new(TEST_MIDSTATE, 64);
     }

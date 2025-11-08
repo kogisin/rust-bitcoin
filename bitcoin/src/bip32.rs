@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! BIP32 implementation.
+//! BIP-0032 implementation.
 //!
-//! Implementation of BIP32 hierarchical deterministic wallets, as defined
+//! Implementation of BIP-0032 hierarchical deterministic wallets, as defined
 //! at <https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki>.
 
 use core::convert::Infallible;
@@ -16,7 +16,7 @@ use internals::write_err;
 use secp256k1::Secp256k1;
 
 use crate::crypto::key::{CompressedPublicKey, Keypair, PrivateKey, XOnlyPublicKey};
-use crate::internal_macros::{impl_array_newtype, impl_array_newtype_stringify};
+use crate::internal_macros;
 use crate::network::NetworkKind;
 use crate::prelude::{String, Vec};
 
@@ -40,23 +40,23 @@ pub type ExtendedPrivKey = Xpriv;
 /// A chain code
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChainCode([u8; 32]);
-impl_array_newtype!(ChainCode, u8, 32);
-impl_array_newtype_stringify!(ChainCode, 32);
+internal_macros::impl_array_newtype!(ChainCode, u8, 32);
+internal_macros::impl_array_newtype_stringify!(ChainCode, 32);
 
 impl ChainCode {
     fn from_hmac(hmac: Hmac<sha512::Hash>) -> Self {
-        ChainCode(*hmac.as_byte_array().split_array::<32, 32>().1)
+        Self(*hmac.as_byte_array().split_array::<32, 32>().1)
     }
 }
 
 /// A fingerprint
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Fingerprint([u8; 4]);
-impl_array_newtype!(Fingerprint, u8, 4);
-impl_array_newtype_stringify!(Fingerprint, 4);
+internal_macros::impl_array_newtype!(Fingerprint, u8, 4);
+internal_macros::impl_array_newtype_stringify!(Fingerprint, 4);
 
 hash_newtype! {
-    /// Extended key identifier as defined in BIP-32.
+    /// Extended key identifier as defined in BIP-0032.
     pub struct XKeyIdentifier(hash160::Hash);
 }
 
@@ -82,7 +82,7 @@ pub struct Xpriv {
     pub chain_code: ChainCode,
 }
 #[cfg(feature = "serde")]
-internals::serde_string_impl!(Xpriv, "a BIP-32 extended private key");
+internals::serde_string_impl!(Xpriv, "a BIP-0032 extended private key");
 
 #[cfg(not(feature = "std"))]
 impl fmt::Debug for Xpriv {
@@ -115,7 +115,7 @@ pub struct Xpub {
     pub chain_code: ChainCode,
 }
 #[cfg(feature = "serde")]
-internals::serde_string_impl!(Xpub, "a BIP-32 extended public key");
+internals::serde_string_impl!(Xpub, "a BIP-0032 extended public key");
 
 /// A child number for a derived key
 #[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord, Hash)]
@@ -133,16 +133,16 @@ pub enum ChildNumber {
 }
 impl ChildNumber {
     /// Normal child number with index 0.
-    pub const ZERO_NORMAL: Self = ChildNumber::Normal { index: 0 };
+    pub const ZERO_NORMAL: Self = Self::Normal { index: 0 };
 
     /// Normal child number with index 1.
-    pub const ONE_NORMAL: Self = ChildNumber::Normal { index: 1 };
+    pub const ONE_NORMAL: Self = Self::Normal { index: 1 };
 
     /// Hardened child number with index 0.
-    pub const ZERO_HARDENED: Self = ChildNumber::Hardened { index: 0 };
+    pub const ZERO_HARDENED: Self = Self::Hardened { index: 0 };
 
     /// Hardened child number with index 1.
-    pub const ONE_HARDENED: Self = ChildNumber::Hardened { index: 1 };
+    pub const ONE_HARDENED: Self = Self::Hardened { index: 1 };
 
     /// Constructs a new [`Normal`] from an index, returns an error if the index is not within
     /// [0, 2^31 - 1].
@@ -150,7 +150,7 @@ impl ChildNumber {
     /// [`Normal`]: #variant.Normal
     pub fn from_normal_idx(index: u32) -> Result<Self, IndexOutOfRangeError> {
         if index & (1 << 31) == 0 {
-            Ok(ChildNumber::Normal { index })
+            Ok(Self::Normal { index })
         } else {
             Err(IndexOutOfRangeError { index })
         }
@@ -162,7 +162,7 @@ impl ChildNumber {
     /// [`Hardened`]: #variant.Hardened
     pub fn from_hardened_idx(index: u32) -> Result<Self, IndexOutOfRangeError> {
         if index & (1 << 31) == 0 {
-            Ok(ChildNumber::Hardened { index })
+            Ok(Self::Hardened { index })
         } else {
             Err(IndexOutOfRangeError { index })
         }
@@ -178,19 +178,19 @@ impl ChildNumber {
     /// [`Hardened`]: #variant.Hardened
     pub fn is_hardened(&self) -> bool {
         match self {
-            ChildNumber::Hardened { .. } => true,
-            ChildNumber::Normal { .. } => false,
+            Self::Hardened { .. } => true,
+            Self::Normal { .. } => false,
         }
     }
 
     /// Returns the child number that is a single increment from this one.
-    pub fn increment(self) -> Result<ChildNumber, IndexOutOfRangeError> {
+    pub fn increment(self) -> Result<Self, IndexOutOfRangeError> {
         // Bare addition in this function is okay, because we have an invariant that
         // `index` is always within [0, 2^31 - 1]. FIXME this is not actually an
         // invariant because the fields are public.
         match self {
-            ChildNumber::Normal { index: idx } => ChildNumber::from_normal_idx(idx + 1),
-            ChildNumber::Hardened { index: idx } => ChildNumber::from_hardened_idx(idx + 1),
+            Self::Normal { index: idx } => Self::from_normal_idx(idx + 1),
+            Self::Hardened { index: idx } => Self::from_hardened_idx(idx + 1),
         }
     }
 
@@ -208,12 +208,12 @@ impl ChildNumber {
         F: Fn(&u32, &mut fmt::Formatter) -> fmt::Result,
     {
         match *self {
-            ChildNumber::Hardened { index } => {
+            Self::Hardened { index } => {
                 format_fn(&index, f)?;
                 let alt = f.alternate();
                 f.write_str(if alt { hardened_alt_suffix } else { "'" })
             }
-            ChildNumber::Normal { index } => format_fn(&index, f),
+            Self::Normal { index } => format_fn(&index, f),
         }
     }
 }
@@ -221,9 +221,9 @@ impl ChildNumber {
 impl From<u32> for ChildNumber {
     fn from(number: u32) -> Self {
         if number & (1 << 31) != 0 {
-            ChildNumber::Hardened { index: number ^ (1 << 31) }
+            Self::Hardened { index: number ^ (1 << 31) }
         } else {
-            ChildNumber::Normal { index: number }
+            Self::Normal { index: number }
         }
     }
 }
@@ -271,21 +271,21 @@ impl FromStr for ChildNumber {
     type Err = ParseChildNumberError;
 
     fn from_str(inp: &str) -> Result<Self, Self::Err> {
-        let is_hardened = inp.chars().last().map_or(false, |l| l == '\'' || l == 'h');
+        let is_hardened = inp.chars().last().is_some_and(|l| l == '\'' || l == 'h');
         Ok(if is_hardened {
-            ChildNumber::from_hardened_idx(
+            Self::from_hardened_idx(
                 inp[0..inp.len() - 1].parse().map_err(ParseChildNumberError::ParseInt)?,
             )
             .map_err(ParseChildNumberError::IndexOutOfRange)?
         } else {
-            ChildNumber::from_normal_idx(inp.parse().map_err(ParseChildNumberError::ParseInt)?)
+            Self::from_normal_idx(inp.parse().map_err(ParseChildNumberError::ParseInt)?)
                 .map_err(ParseChildNumberError::IndexOutOfRange)?
         })
     }
 }
 
-impl AsRef<[ChildNumber]> for ChildNumber {
-    fn as_ref(&self) -> &[ChildNumber] { slice::from_ref(self) }
+impl AsRef<[Self]> for ChildNumber {
+    fn as_ref(&self) -> &[Self] { slice::from_ref(self) }
 }
 
 #[cfg(feature = "serde")]
@@ -294,7 +294,7 @@ impl<'de> serde::Deserialize<'de> for ChildNumber {
     where
         D: serde::Deserializer<'de>,
     {
-        u32::deserialize(deserializer).map(ChildNumber::from)
+        u32::deserialize(deserializer).map(Self::from)
     }
 }
 
@@ -315,12 +315,12 @@ pub trait IntoDerivationPath {
     fn into_derivation_path(self) -> Result<DerivationPath, ParseChildNumberError>;
 }
 
-/// A BIP-32 derivation path.
+/// A BIP-0032 derivation path.
 #[derive(Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct DerivationPath(Vec<ChildNumber>);
 
 #[cfg(feature = "serde")]
-internals::serde_string_impl!(DerivationPath, "a BIP-32 derivation path");
+internals::serde_string_impl!(DerivationPath, "a BIP-0032 derivation path");
 
 impl<I> Index<I> for DerivationPath
 where
@@ -333,7 +333,7 @@ where
 }
 
 impl Default for DerivationPath {
-    fn default() -> DerivationPath { DerivationPath::master() }
+    fn default() -> Self { Self::master() }
 }
 
 impl<T> IntoDerivationPath for T
@@ -354,7 +354,7 @@ impl IntoDerivationPath for &'_ str {
 }
 
 impl From<Vec<ChildNumber>> for DerivationPath {
-    fn from(numbers: Vec<ChildNumber>) -> Self { DerivationPath(numbers) }
+    fn from(numbers: Vec<ChildNumber>) -> Self { Self(numbers) }
 }
 
 impl From<DerivationPath> for Vec<ChildNumber> {
@@ -362,7 +362,7 @@ impl From<DerivationPath> for Vec<ChildNumber> {
 }
 
 impl<'a> From<&'a [ChildNumber]> for DerivationPath {
-    fn from(numbers: &'a [ChildNumber]) -> Self { DerivationPath(numbers.to_vec()) }
+    fn from(numbers: &'a [ChildNumber]) -> Self { Self(numbers.to_vec()) }
 }
 
 impl core::iter::FromIterator<ChildNumber> for DerivationPath {
@@ -370,7 +370,7 @@ impl core::iter::FromIterator<ChildNumber> for DerivationPath {
     where
         T: IntoIterator<Item = ChildNumber>,
     {
-        DerivationPath(Vec::from_iter(iter))
+        Self(Vec::from_iter(iter))
     }
 }
 
@@ -396,7 +396,7 @@ impl FromStr for DerivationPath {
 
         let parts = path.split('/');
         let ret: Result<Vec<ChildNumber>, _> = parts.map(str::parse).collect();
-        Ok(DerivationPath(ret?))
+        Ok(Self(ret?))
     }
 }
 
@@ -410,8 +410,8 @@ pub struct DerivationPathIterator<'a> {
 }
 
 impl<'a> DerivationPathIterator<'a> {
-    /// Start a new [DerivationPathIterator] at the given child.
-    pub fn start_from(path: &'a DerivationPath, start: ChildNumber) -> DerivationPathIterator<'a> {
+    /// Starts a new [DerivationPathIterator] at the given child.
+    pub fn start_from(path: &'a DerivationPath, start: ChildNumber) -> Self {
         DerivationPathIterator { base: path, next_child: Some(start) }
     }
 }
@@ -434,38 +434,38 @@ impl DerivationPath {
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
 
     /// Returns derivation path for a master key (i.e. empty derivation path)
-    pub fn master() -> DerivationPath { DerivationPath(vec![]) }
+    pub fn master() -> Self { Self(vec![]) }
 
     /// Returns whether derivation path represents master key (i.e. it's length
     /// is empty). True for `m` path.
     pub fn is_master(&self) -> bool { self.0.is_empty() }
 
     /// Constructs a new [DerivationPath] that is a child of this one.
-    pub fn child(&self, cn: ChildNumber) -> DerivationPath {
+    pub fn child(&self, cn: ChildNumber) -> Self {
         let mut path = self.0.clone();
         path.push(cn);
-        DerivationPath(path)
+        Self(path)
     }
 
-    /// Convert into a [DerivationPath] that is a child of this one.
-    pub fn into_child(self, cn: ChildNumber) -> DerivationPath {
+    /// Converts into a [DerivationPath] that is a child of this one.
+    pub fn into_child(self, cn: ChildNumber) -> Self {
         let mut path = self.0;
         path.push(cn);
-        DerivationPath(path)
+        Self(path)
     }
 
-    /// Get an [Iterator] over the children of this [DerivationPath]
+    /// Gets an [Iterator] over the children of this [DerivationPath]
     /// starting with the given [ChildNumber].
     pub fn children_from(&self, cn: ChildNumber) -> DerivationPathIterator<'_> {
         DerivationPathIterator::start_from(self, cn)
     }
 
-    /// Get an [Iterator] over the unhardened children of this [DerivationPath].
+    /// Gets an [Iterator] over the unhardened children of this [DerivationPath].
     pub fn normal_children(&self) -> DerivationPathIterator<'_> {
         DerivationPathIterator::start_from(self, ChildNumber::Normal { index: 0 })
     }
 
-    /// Get an [Iterator] over the hardened children of this [DerivationPath].
+    /// Gets an [Iterator] over the hardened children of this [DerivationPath].
     pub fn hardened_children(&self) -> DerivationPathIterator<'_> {
         DerivationPathIterator::start_from(self, ChildNumber::Hardened { index: 0 })
     }
@@ -485,7 +485,7 @@ impl DerivationPath {
     ///
     /// assert_eq!(deriv_1, deriv_2);
     /// ```
-    pub fn extend<T: AsRef<[ChildNumber]>>(&self, path: T) -> DerivationPath {
+    pub fn extend<T: AsRef<[ChildNumber]>>(&self, path: T) -> Self {
         let mut new_path = self.clone();
         new_path.0.extend_from_slice(path.as_ref());
         new_path
@@ -548,7 +548,7 @@ impl fmt::Debug for DerivationPath {
 /// master extended public key and a derivation path from it.
 pub type KeySource = (Fingerprint, DerivationPath);
 
-/// A BIP32 error
+/// A BIP-0032 error
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -586,7 +586,7 @@ impl fmt::Display for ParseError {
             Base58(ref e) => write_err!(f, "base58 encoding error"; e),
             InvalidBase58PayloadLength(ref e) => write_err!(f, "base58 payload"; e),
             InvalidPrivateKeyPrefix =>
-                f.write_str("invalid private key prefix, byte 45 must be 0 as required by BIP-32"),
+                f.write_str("invalid private key prefix, byte 45 must be 0 as required by BIP-0032"),
             NonZeroParentFingerprintForMasterKey =>
                 f.write_str("non-zero parent fingerprint in master key"),
             NonZeroChildNumberForMasterKey => f.write_str("non-zero child number in master key"),
@@ -612,20 +612,20 @@ impl std::error::Error for ParseError {
 }
 
 impl From<secp256k1::Error> for ParseError {
-    fn from(e: secp256k1::Error) -> ParseError { ParseError::Secp256k1(e) }
+    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1(e) }
 }
 
 impl From<base58::Error> for ParseError {
-    fn from(err: base58::Error) -> Self { ParseError::Base58(err) }
+    fn from(err: base58::Error) -> Self { Self::Base58(err) }
 }
 
 impl From<InvalidBase58PayloadLengthError> for ParseError {
-    fn from(e: InvalidBase58PayloadLengthError) -> ParseError {
+    fn from(e: InvalidBase58PayloadLengthError) -> Self {
         Self::InvalidBase58PayloadLength(e)
     }
 }
 
-/// A BIP32 error
+/// A BIP-0032 error
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DerivationError {
@@ -710,12 +710,12 @@ impl fmt::Display for ParseChildNumberError {
 
 impl Xpriv {
     /// Constructs a new master key from a seed value
-    pub fn new_master(network: impl Into<NetworkKind>, seed: &[u8]) -> Xpriv {
+    pub fn new_master(network: impl Into<NetworkKind>, seed: &[u8]) -> Self {
         let mut engine = HmacEngine::<sha512::HashEngine>::new(b"Bitcoin seed");
         engine.input(seed);
         let hmac = engine.finalize();
 
-        Xpriv {
+        Self {
             network: network.into(),
             depth: 0,
             parent_fingerprint: Default::default(),
@@ -742,11 +742,11 @@ impl Xpriv {
         Xpub::from_xpriv(secp, &self)
     }
 
-    /// Constructs a new BIP340 keypair for Schnorr signatures and Taproot use matching the internal
+    /// Constructs a new BIP-0340 keypair for Schnorr signatures and Taproot use matching the internal
     /// secret key representation.
     pub fn to_keypair<C: secp256k1::Signing>(self, secp: &Secp256k1<C>) -> Keypair {
         Keypair::from_seckey_slice(secp, &self.private_key[..])
-            .expect("BIP32 internal private key representation is broken")
+            .expect("BIP-0032 internal private key representation is broken")
     }
 
     /// Derives an extended private key from a path.
@@ -757,7 +757,7 @@ impl Xpriv {
         &self,
         secp: &Secp256k1<C>,
         path: P,
-    ) -> Result<Xpriv, DerivationError> {
+    ) -> Result<Self, DerivationError> {
         self.derive_xpriv(secp, path)
     }
 
@@ -768,8 +768,8 @@ impl Xpriv {
         &self,
         secp: &Secp256k1<C>,
         path: P,
-    ) -> Result<Xpriv, DerivationError> {
-        let mut sk: Xpriv = *self;
+    ) -> Result<Self, DerivationError> {
+        let mut sk: Self = *self;
         for cnum in path.as_ref() {
             sk = sk.ckd_priv(secp, *cnum)?;
         }
@@ -781,7 +781,7 @@ impl Xpriv {
         &self,
         secp: &Secp256k1<C>,
         i: ChildNumber,
-    ) -> Result<Xpriv, DerivationError> {
+    ) -> Result<Self, DerivationError> {
         let mut engine = HmacEngine::<sha512::HashEngine>::new(&self.chain_code[..]);
         match i {
             ChildNumber::Normal { .. } => {
@@ -805,7 +805,7 @@ impl Xpriv {
         let tweaked =
             sk.add_tweak(&self.private_key.into()).expect("statistically impossible to hit");
 
-        Ok(Xpriv {
+        Ok(Self {
             network: self.network,
             depth: self.depth.checked_add(1).ok_or(DerivationError::MaximumDepthExceeded)?,
             parent_fingerprint: self.fingerprint(secp),
@@ -815,8 +815,8 @@ impl Xpriv {
         })
     }
 
-    /// Decoding extended private key from binary data according to BIP 32
-    pub fn decode(data: &[u8]) -> Result<Xpriv, ParseError> {
+    /// Decoding extended private key from binary data according to BIP-0032
+    pub fn decode(data: &[u8]) -> Result<Self, ParseError> {
         let Common { network, depth, parent_fingerprint, child_number, chain_code, key } =
             Common::decode(data)?;
 
@@ -831,7 +831,7 @@ impl Xpriv {
             return Err(ParseError::InvalidPrivateKeyPrefix);
         }
 
-        Ok(Xpriv {
+        Ok(Self {
             network,
             depth,
             parent_fingerprint,
@@ -841,7 +841,7 @@ impl Xpriv {
         })
     }
 
-    /// Extended private key binary encoding according to BIP 32
+    /// Extended private key binary encoding according to BIP-0032
     pub fn encode(&self) -> [u8; 78] {
         let mut ret = [0; 78];
         ret[0..4].copy_from_slice(&match self.network {
@@ -871,13 +871,13 @@ impl Xpriv {
 impl Xpub {
     /// Constructs a new extended public key from an extended private key.
     #[deprecated(since = "TBD", note = "use `from_xpriv()` instead")]
-    pub fn from_priv<C: secp256k1::Signing>(secp: &Secp256k1<C>, sk: &Xpriv) -> Xpub {
+    pub fn from_priv<C: secp256k1::Signing>(secp: &Secp256k1<C>, sk: &Xpriv) -> Self {
         Self::from_xpriv(secp, sk)
     }
 
     /// Constructs a new extended public key from an extended private key.
-    pub fn from_xpriv<C: secp256k1::Signing>(secp: &Secp256k1<C>, xpriv: &Xpriv) -> Xpub {
-        Xpub {
+    pub fn from_xpriv<C: secp256k1::Signing>(secp: &Secp256k1<C>, xpriv: &Xpriv) -> Self {
+        Self {
             network: xpriv.network,
             depth: xpriv.depth,
             parent_fingerprint: xpriv.parent_fingerprint,
@@ -894,12 +894,12 @@ impl Xpub {
     /// Constructs a new ECDSA compressed public key matching internal public key representation.
     pub fn to_public_key(self) -> CompressedPublicKey { CompressedPublicKey(self.public_key) }
 
-    /// Constructs a new BIP340 x-only public key for BIP-340 signatures and Taproot use matching
+    /// Constructs a new BIP-0340 x-only public key for BIP-0340 signatures and Taproot use matching
     /// the internal public key representation.
     #[deprecated(since = "TBD", note = "use `to_x_only_public_key()` instead")]
     pub fn to_x_only_pub(self) -> XOnlyPublicKey { self.to_x_only_public_key() }
 
-    /// Constructs a new BIP340 x-only public key for BIP-340 signatures and Taproot use matching
+    /// Constructs a new BIP-0340 x-only public key for BIP-0340 signatures and Taproot use matching
     /// the internal public key representation.
     pub fn to_x_only_public_key(self) -> XOnlyPublicKey { XOnlyPublicKey::from(self.public_key) }
 
@@ -911,7 +911,7 @@ impl Xpub {
         &self,
         secp: &Secp256k1<C>,
         path: P,
-    ) -> Result<Xpub, DerivationError> {
+    ) -> Result<Self, DerivationError> {
         self.derive_xpub(secp, path)
     }
 
@@ -922,15 +922,15 @@ impl Xpub {
         &self,
         secp: &Secp256k1<C>,
         path: P,
-    ) -> Result<Xpub, DerivationError> {
-        let mut pk: Xpub = *self;
+    ) -> Result<Self, DerivationError> {
+        let mut pk: Self = *self;
         for cnum in path.as_ref() {
             pk = pk.ckd_pub(secp, *cnum)?
         }
         Ok(pk)
     }
 
-    /// Compute the scalar tweak added to this key to get a child key
+    /// Computes the scalar tweak added to this key to get a child key
     pub fn ckd_pub_tweak(
         &self,
         i: ChildNumber,
@@ -958,12 +958,12 @@ impl Xpub {
         &self,
         secp: &Secp256k1<C>,
         i: ChildNumber,
-    ) -> Result<Xpub, DerivationError> {
+    ) -> Result<Self, DerivationError> {
         let (sk, chain_code) = self.ckd_pub_tweak(i)?;
         let tweaked =
             self.public_key.add_exp_tweak(secp, &sk.into()).expect("cryptographically unreachable");
 
-        Ok(Xpub {
+        Ok(Self {
             network: self.network,
             depth: self.depth.checked_add(1).ok_or(DerivationError::MaximumDepthExceeded)?,
             parent_fingerprint: self.fingerprint(),
@@ -973,8 +973,8 @@ impl Xpub {
         })
     }
 
-    /// Decoding extended public key from binary data according to BIP 32
-    pub fn decode(data: &[u8]) -> Result<Xpub, ParseError> {
+    /// Decoding extended public key from binary data according to BIP-0032
+    pub fn decode(data: &[u8]) -> Result<Self, ParseError> {
         let Common { network, depth, parent_fingerprint, child_number, chain_code, key } =
             Common::decode(data)?;
 
@@ -984,7 +984,7 @@ impl Xpub {
             unknown => return Err(ParseError::UnknownVersion(unknown)),
         };
 
-        Ok(Xpub {
+        Ok(Self {
             network,
             depth,
             parent_fingerprint,
@@ -994,7 +994,7 @@ impl Xpub {
         })
     }
 
-    /// Extended public key binary encoding according to BIP 32
+    /// Extended public key binary encoding according to BIP-0032
     pub fn encode(&self) -> [u8; 78] {
         let mut ret = [0; 78];
         ret[0..4].copy_from_slice(&match self.network {
@@ -1029,14 +1029,14 @@ impl fmt::Display for Xpriv {
 impl FromStr for Xpriv {
     type Err = ParseError;
 
-    fn from_str(inp: &str) -> Result<Xpriv, ParseError> {
+    fn from_str(inp: &str) -> Result<Self, ParseError> {
         let data = base58::decode_check(inp)?;
 
         if data.len() != 78 {
             return Err(InvalidBase58PayloadLengthError { length: data.len() }.into());
         }
 
-        Xpriv::decode(&data)
+        Self::decode(&data)
     }
 }
 
@@ -1049,23 +1049,23 @@ impl fmt::Display for Xpub {
 impl FromStr for Xpub {
     type Err = ParseError;
 
-    fn from_str(inp: &str) -> Result<Xpub, ParseError> {
+    fn from_str(inp: &str) -> Result<Self, ParseError> {
         let data = base58::decode_check(inp)?;
 
         if data.len() != 78 {
             return Err(InvalidBase58PayloadLengthError { length: data.len() }.into());
         }
 
-        Xpub::decode(&data)
+        Self::decode(&data)
     }
 }
 
 impl From<Xpub> for XKeyIdentifier {
-    fn from(key: Xpub) -> XKeyIdentifier { key.identifier() }
+    fn from(key: Xpub) -> Self { key.identifier() }
 }
 
 impl From<&Xpub> for XKeyIdentifier {
-    fn from(key: &Xpub) -> XKeyIdentifier { key.identifier() }
+    fn from(key: &Xpub) -> Self { key.identifier() }
 }
 
 /// Decoded base58 data was an invalid length.
@@ -1125,7 +1125,7 @@ impl Common {
             }
         }
 
-        Ok(Common {
+        Ok(Self {
             network,
             depth,
             parent_fingerprint: parent_fingerprint.into(),

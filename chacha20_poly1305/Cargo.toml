@@ -9,7 +9,7 @@ categories = ["cryptography"]
 keywords = ["crypto", "encryption"]
 readme = "README.md"
 edition = "2021"
-rust-version = "1.63.0"
+rust-version = "1.74.0"
 exclude = ["tests", "contrib"]
 
 [features]
@@ -26,3 +26,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ['cfg(bench)'] }
+
+[lints.clippy]
+use_self = "warn"

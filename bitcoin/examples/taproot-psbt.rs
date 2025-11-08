@@ -87,15 +87,15 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 use bitcoin::taproot::{self, LeafVersion, TapLeafHash, TaprootBuilder, TaprootSpendInfo};
 use bitcoin::{
-    absolute, script, transaction, Address, Amount, Network, OutPoint, ScriptBuf, Transaction,
-    TxIn, TxOut, Witness,
+    absolute, script, transaction, Address, Amount, Network, OutPoint, ScriptPubKeyBuf,
+    ScriptSigBuf, TapScriptBuf, Transaction, TxIn, TxOut, Witness,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secp = Secp256k1::new();
 
     println!("\n----------------");
-    println!("\nSTART EXAMPLE 1 - P2TR with a BIP86 commitment, signed with internal key\n");
+    println!("\nSTART EXAMPLE 1 - P2TR with a BIP-0086 commitment, signed with internal key\n");
 
     // Just some addresses for outputs from our wallets. Not really important.
     let to_address = "bcrt1p0p3rvwww0v9znrclp00uneq8ytre9kj922v8fxhnezm3mgsmn9usdxaefc"
@@ -118,8 +118,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Set these fields with valid data for the UTXO from step 5 above
         UTXO_1,
         vec![
-            TxOut { value: amount_to_send, script_pubkey: to_address.script_pubkey() },
-            TxOut { value: change_amount, script_pubkey: change_address.script_pubkey() },
+            TxOut { amount: amount_to_send, script_pubkey: to_address.script_pubkey() },
+            TxOut { amount: change_amount, script_pubkey: change_address.script_pubkey() },
         ],
     )?);
     println!(
@@ -230,13 +230,13 @@ fn generate_bip86_key_spend_tx(
     let tx1 = Transaction {
         version: transaction::Version::TWO,
         lock_time: absolute::LockTime::ZERO,
-        input: vec![TxIn {
+        inputs: vec![TxIn {
             previous_output: OutPoint { txid: input_utxo.txid.parse()?, vout: input_utxo.vout },
-            script_sig: ScriptBuf::new(),
+            script_sig: ScriptSigBuf::new(),
             sequence: bitcoin::Sequence(0xFFFFFFFF), // Ignore nSequence.
             witness: Witness::default(),
         }],
-        output: outputs,
+        outputs,
     };
     let mut psbt = Psbt::from_unsigned_tx(tx1)?;
 
@@ -254,9 +254,10 @@ fn generate_bip86_key_spend_tx(
 
     let mut input = Input {
         witness_utxo: {
-            let script_pubkey = ScriptBuf::from_hex_no_length_prefix(input_utxo.script_pubkey)
-                .expect("failed to parse input utxo scriptPubkey");
-            Some(TxOut { value: from_amount, script_pubkey })
+            let script_pubkey =
+                ScriptPubKeyBuf::from_hex_no_length_prefix(input_utxo.script_pubkey)
+                    .expect("failed to parse input utxo scriptPubkey");
+            Some(TxOut { amount: from_amount, script_pubkey })
         },
         tap_key_origins: origins,
         ..Default::default()
@@ -271,8 +272,8 @@ fn generate_bip86_key_spend_tx(
     let mut input_txouts = Vec::<TxOut>::new();
     for input in [&input_utxo].iter() {
         input_txouts.push(TxOut {
-            value: input.amount,
-            script_pubkey: ScriptBuf::from_hex_no_length_prefix(input.script_pubkey)?,
+            amount: input.amount,
+            script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(input.script_pubkey)?,
         });
     }
 
@@ -329,8 +330,9 @@ fn generate_bip86_key_spend_tx(
     let tx = psbt.extract_tx_unchecked_fee_rate();
     tx.verify(|_| {
         Some(TxOut {
-            value: from_amount,
-            script_pubkey: ScriptBuf::from_hex_no_length_prefix(input_utxo.script_pubkey).unwrap(),
+            amount: from_amount,
+            script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(input_utxo.script_pubkey)
+                .unwrap(),
         })
     })
     .expect("failed to verify transaction");
@@ -367,7 +369,7 @@ impl BenefactorWallet {
     fn time_lock_script(
         locktime: absolute::LockTime,
         beneficiary_key: XOnlyPublicKey,
-    ) -> ScriptBuf {
+    ) -> TapScriptBuf {
         script::Builder::new()
             .push_lock_time(locktime)
             .push_opcode(OP_CLTV)
@@ -384,7 +386,9 @@ impl BenefactorWallet {
     ) -> Result<(Transaction, Psbt), Box<dyn std::error::Error>> {
         if let ChildNumber::Normal { index } = self.next {
             if index > 0 && self.current_spend_info.is_some() {
-                return Err("transaction already exists, use refresh_inheritance_timelock to refresh the timelock".into());
+                return Err(
+                    "transaction already exists, use refresh_tx to refresh the timelock".into()
+                );
             }
         }
         // We use some other derivation path in this example for our inheritance protocol. The important thing is to ensure
@@ -407,33 +411,33 @@ impl BenefactorWallet {
             .finalize(&self.secp, internal_keypair.x_only_public_key().0)
             .expect("should be finalizable");
         self.current_spend_info = Some(taproot_spend_info.clone());
-        let script_pubkey = ScriptBuf::new_p2tr(
+        let script_pubkey = ScriptPubKeyBuf::new_p2tr(
             &self.secp,
             taproot_spend_info.internal_key(),
             taproot_spend_info.merkle_root(),
         );
-        let value = (input_utxo.amount - ABSOLUTE_FEES)
+        let amount = (input_utxo.amount - ABSOLUTE_FEES)
             .expect("ABSOLUTE_FEES must be set below input amount");
 
-        // Spend a normal BIP86-like output as an input in our inheritance funding transaction
+        // Spend a normal BIP-0086-like output as an input in our inheritance funding transaction
         let tx = generate_bip86_key_spend_tx(
             &self.secp,
             self.master_xpriv,
             input_utxo,
-            vec![TxOut { script_pubkey: script_pubkey.clone(), value }],
+            vec![TxOut { script_pubkey: script_pubkey.clone(), amount }],
         )?;
 
         // CREATOR + UPDATER
         let next_tx = Transaction {
             version: transaction::Version::TWO,
             lock_time,
-            input: vec![TxIn {
+            inputs: vec![TxIn {
                 previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-                script_sig: ScriptBuf::new(),
+                script_sig: ScriptSigBuf::new(),
                 sequence: bitcoin::Sequence(0xFFFFFFFD), // enable locktime and opt-in RBF
                 witness: Witness::default(),
             }],
-            output: vec![],
+            outputs: vec![],
         };
         let mut next_psbt = Psbt::from_unsigned_tx(next_tx)?;
         let mut origins = BTreeMap::new();
@@ -453,7 +457,7 @@ impl BenefactorWallet {
         );
 
         let input = Input {
-            witness_utxo: { Some(TxOut { value, script_pubkey }) },
+            witness_utxo: { Some(TxOut { amount, script_pubkey }) },
             tap_key_origins: origins,
             tap_merkle_root: taproot_spend_info.merkle_root(),
             sighash_type: Some(ty),
@@ -476,8 +480,8 @@ impl BenefactorWallet {
         if let Some(ref spend_info) = self.current_spend_info.clone() {
             let mut psbt = self.next_psbt.clone().expect("should have next_psbt");
             let input = &mut psbt.inputs[0];
-            let input_value = input.witness_utxo.as_ref().unwrap().value;
-            let output_value = (input_value - ABSOLUTE_FEES).into_result()?;
+            let input_amount = input.witness_utxo.as_ref().unwrap().amount;
+            let output_amount = (input_amount - ABSOLUTE_FEES).into_result()?;
 
             // We use some other derivation path in this example for our inheritance protocol. The important thing is to ensure
             // that we use an unhardened path so we can make use of xpubs.
@@ -507,14 +511,14 @@ impl BenefactorWallet {
                 .expect("should be finalizable");
             self.current_spend_info = Some(taproot_spend_info.clone());
             let prevout_script_pubkey = input.witness_utxo.as_ref().unwrap().script_pubkey.clone();
-            let output_script_pubkey = ScriptBuf::new_p2tr(
+            let output_script_pubkey = ScriptPubKeyBuf::new_p2tr(
                 &self.secp,
                 taproot_spend_info.internal_key(),
                 taproot_spend_info.merkle_root(),
             );
 
-            psbt.unsigned_tx.output =
-                vec![TxOut { script_pubkey: output_script_pubkey.clone(), value: output_value }];
+            psbt.unsigned_tx.outputs =
+                vec![TxOut { script_pubkey: output_script_pubkey.clone(), amount: output_amount }];
             psbt.outputs = vec![Output::default()];
             psbt.unsigned_tx.lock_time = absolute::LockTime::ZERO;
 
@@ -525,7 +529,7 @@ impl BenefactorWallet {
             let hash = SighashCache::new(&psbt.unsigned_tx).taproot_key_spend_signature_hash(
                 0,
                 &sighash::Prevouts::All(&[TxOut {
-                    value: input_value,
+                    amount: input_amount,
                     script_pubkey: prevout_script_pubkey,
                 }]),
                 sighash_type,
@@ -570,20 +574,20 @@ impl BenefactorWallet {
             // EXTRACTOR
             let tx = psbt.extract_tx_unchecked_fee_rate();
             tx.verify(|_| {
-                Some(TxOut { value: input_value, script_pubkey: output_script_pubkey.clone() })
+                Some(TxOut { amount: input_amount, script_pubkey: output_script_pubkey.clone() })
             })
             .expect("failed to verify transaction");
 
             let next_tx = Transaction {
                 version: transaction::Version::TWO,
                 lock_time,
-                input: vec![TxIn {
+                inputs: vec![TxIn {
                     previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
-                    script_sig: ScriptBuf::new(),
+                    script_sig: ScriptSigBuf::new(),
                     sequence: bitcoin::Sequence(0xFFFFFFFD), // enable locktime and opt-in RBF
                     witness: Witness::default(),
                 }],
-                output: vec![],
+                outputs: vec![],
             };
             let mut next_psbt = Psbt::from_unsigned_tx(next_tx)?;
             let mut origins = BTreeMap::new();
@@ -603,9 +607,9 @@ impl BenefactorWallet {
             let input = Input {
                 witness_utxo: {
                     let script_pubkey = output_script_pubkey;
-                    let amount = output_value;
+                    let amount = output_amount;
 
-                    Some(TxOut { value: amount, script_pubkey })
+                    Some(TxOut { amount, script_pubkey })
                 },
                 tap_key_origins: origins,
                 tap_merkle_root: taproot_spend_info.merkle_root(),
@@ -646,13 +650,13 @@ impl BeneficiaryWallet {
         lock_time: absolute::LockTime,
         to_address: Address,
     ) -> Result<Transaction, Box<dyn std::error::Error>> {
-        let input_value = psbt.inputs[0].witness_utxo.as_ref().unwrap().value;
+        let input_amount = psbt.inputs[0].witness_utxo.as_ref().unwrap().amount;
         let input_script_pubkey =
             psbt.inputs[0].witness_utxo.as_ref().unwrap().script_pubkey.clone();
         psbt.unsigned_tx.lock_time = lock_time;
-        psbt.unsigned_tx.output = vec![TxOut {
+        psbt.unsigned_tx.outputs = vec![TxOut {
             script_pubkey: to_address.script_pubkey(),
-            value: (input_value - ABSOLUTE_FEES)
+            amount: (input_amount - ABSOLUTE_FEES)
                 .expect("ABSOLUTE_FEES must be set below input amount"),
         }];
         psbt.outputs = vec![Output::default()];
@@ -669,7 +673,7 @@ impl BeneficiaryWallet {
                 let hash = SighashCache::new(&unsigned_tx).taproot_script_spend_signature_hash(
                     0,
                     &sighash::Prevouts::All(&[TxOut {
-                        value: input_value,
+                        amount: input_amount,
                         script_pubkey: input_script_pubkey.clone(),
                     }]),
                     *lh,
@@ -713,7 +717,7 @@ impl BeneficiaryWallet {
         // EXTRACTOR
         let tx = psbt.extract_tx_unchecked_fee_rate();
         tx.verify(|_| {
-            Some(TxOut { value: input_value, script_pubkey: input_script_pubkey.clone() })
+            Some(TxOut { amount: input_amount, script_pubkey: input_script_pubkey.clone() })
         })
         .expect("failed to verify transaction");
 
@@ -750,8 +754,7 @@ fn sign_psbt_taproot(
         Some(_) => keypair, // no tweak for script spend
     };
 
-    let msg = secp256k1::Message::from(hash);
-    let signature = secp.sign_schnorr(msg.as_ref(), &keypair);
+    let signature = secp.sign_schnorr(&hash.to_byte_array(), &keypair);
 
     let final_signature = taproot::Signature { signature, sighash_type };
 

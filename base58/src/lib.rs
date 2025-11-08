@@ -8,7 +8,6 @@
 #![cfg(feature = "alloc")]
 #![no_std]
 // Experimental features we need.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![cfg_attr(bench, feature(test))]
 // Coding conventions.
 #![warn(missing_docs)]
@@ -21,7 +20,7 @@
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
 #![allow(clippy::incompatible_msrv)] // Has FPs and we're testing it which is more reliable anyway.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
 extern crate alloc;
 
@@ -194,7 +193,7 @@ trait Buffer: Sized {
 }
 
 impl Buffer for Vec<u8> {
-    fn push(&mut self, val: u8) { Vec::push(self, val) }
+    fn push(&mut self, val: u8) { Self::push(self, val) }
 
     fn slice(&self) -> &[u8] { self }
 
@@ -202,7 +201,7 @@ impl Buffer for Vec<u8> {
 }
 
 impl<const N: usize> Buffer for ArrayVec<u8, N> {
-    fn push(&mut self, val: u8) { ArrayVec::push(self, val) }
+    fn push(&mut self, val: u8) { Self::push(self, val) }
 
     fn slice(&self) -> &[u8] { self.as_slice() }
 
@@ -253,7 +252,7 @@ where
 mod tests {
     use alloc::vec;
 
-    use hex::FromHex as _;
+    use hex_lit::hex;
 
     use super::*;
 
@@ -282,7 +281,7 @@ mod tests {
         assert_eq!(&res, exp);
 
         // Addresses
-        let addr = Vec::from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap();
+        let addr = hex!("00f8917303bfa8ef24f292e8fa1419b20460ba064d");
         assert_eq!(&encode_check(&addr[..]), "1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH");
     }
 
@@ -300,8 +299,8 @@ mod tests {
 
         // Addresses
         assert_eq!(
-            decode_check("1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH").ok(),
-            Some(Vec::from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap())
+            decode_check("1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH").ok().unwrap().as_slice(),
+            hex!("00f8917303bfa8ef24f292e8fa1419b20460ba064d")
         );
         // Non Base58 char.
         assert_eq!(decode("¢").unwrap_err(), InvalidCharacterError::new(194));

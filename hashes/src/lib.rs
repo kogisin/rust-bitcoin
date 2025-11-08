@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! # Rust Bitcoin Hashes Library
+//! Rust Bitcoin Hashes Library
 //!
 //! This library implements the hash functions needed by Bitcoin. As an ancillary thing, it exposes
 //! hexadecimal serialization and deserialization, since these are needed to display hashes.
@@ -51,9 +51,6 @@
 //! ```
 
 #![no_std]
-// Experimental features we need.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
-#![cfg_attr(bench, feature(test))]
 // Coding conventions.
 #![warn(missing_docs)]
 #![warn(deprecated_in_future)]
@@ -62,11 +59,10 @@
 #![warn(clippy::return_self_not_must_use)]
 // Instead of littering the codebase for non-fuzzing and bench code just globally allow.
 #![cfg_attr(hashes_fuzz, allow(dead_code, unused_imports))]
-#![cfg_attr(bench, allow(dead_code, unused_imports))]
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -82,8 +78,6 @@ pub extern crate serde;
 
 #[cfg(all(test, feature = "serde"))]
 extern crate serde_test;
-#[cfg(bench)]
-extern crate test;
 
 /// Re-export the `hex-conservative` crate.
 #[cfg(feature = "hex")]
@@ -113,23 +107,15 @@ pub mod sha256;
 pub mod sha256d;
 pub mod sha256t;
 pub mod sha384;
+pub mod sha3_256;
 pub mod sha512;
 pub mod sha512_256;
 pub mod siphash24;
 
-#[deprecated(since = "0.15.0", note = "use crate::macros instead")]
-pub mod serde_macros {
-    //! Macros for serde trait implementations, and supporting code.
-
-    #[cfg(feature = "serde")]
-    pub mod serde_details {
-        //! Functions used by serde impls of all hashes.
-        pub use crate::macros::serde_details::*;
-    }
-}
-
 use core::fmt::{self, Write as _};
 use core::{convert, hash};
+
+use encoding::Encoder;
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(inline)]
@@ -155,6 +141,8 @@ pub use sha256d::Hash as Sha256d;
 /// SHA-384: Alias for the [`sha384::Hash`] hash type.
 #[doc(inline)]
 pub use sha384::Hash as Sha384;
+/// SHA3-256: Alias for the [`sha3_256::Hash`] hash type.
+pub use sha3_256::Hash as Sha3_256;
 /// SHA-512: Alias for the [`sha512::Hash`] hash type.
 #[doc(inline)]
 pub use sha512::Hash as Sha512;
@@ -199,14 +187,33 @@ pub trait HashEngine: Clone {
     /// Length of the hash's internal block size, in bytes.
     const BLOCK_SIZE: usize;
 
-    /// Add data to the hash engine.
+    /// Adds data to the hash engine.
     fn input(&mut self, data: &[u8]);
 
-    /// Return the number of bytes already input into the engine.
+    /// Returns the number of bytes already input into the engine.
     fn n_bytes_hashed(&self) -> u64;
 
     /// Finalizes this engine.
     fn finalize(self) -> Self::Hash;
+}
+
+/// Encodes an object into a hash engine.
+///
+/// Consumes and returns the hash engine to make it easier to call
+/// [`HashEngine::finalize`] directly on the result.
+pub fn encode_to_engine<T, H>(object: &T, mut engine: H) -> H
+where
+    T: encoding::Encodable + ?Sized,
+    H: HashEngine,
+{
+    let mut encoder = object.encoder();
+    loop {
+        engine.input(encoder.current_chunk());
+        if !encoder.advance() {
+            break;
+        }
+    }
+    engine
 }
 
 /// Trait which applies to hashes of all types.
@@ -226,11 +233,6 @@ pub trait Hash:
 
     /// Constructs a new hash from the underlying byte array.
     fn from_byte_array(bytes: Self::Bytes) -> Self;
-
-    /// Copies a byte slice into a hash object.
-    #[allow(deprecated_in_future)] // Because of `FromSliceError`.
-    #[deprecated(since = "TBD", note = "use `from_byte_array` instead")]
-    fn from_slice(sl: &[u8]) -> Result<Self, FromSliceError>;
 
     /// Returns the underlying byte array.
     fn to_byte_array(self) -> Self::Bytes;

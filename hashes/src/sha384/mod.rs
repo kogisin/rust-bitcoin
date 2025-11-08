@@ -15,7 +15,7 @@ impl Hash {
     pub fn from_engine(e: HashEngine) -> Self {
         let mut ret = [0; 48];
         ret.copy_from_slice(&sha512::Hash::from_engine(e.0).as_byte_array()[..48]);
-        Hash(ret)
+        Self(ret)
     }
 }
 
@@ -140,42 +140,5 @@ mod tests {
             assert_eq!(hash, manual_hash);
             assert_eq!(hash.to_byte_array(), test.output);
         }
-    }
-}
-
-#[cfg(bench)]
-mod benches {
-    use test::Bencher;
-
-    use crate::{sha384, Hash, HashEngine};
-
-    #[bench]
-    pub fn sha384_10(bh: &mut Bencher) {
-        let mut engine = sha384::Hash::engine();
-        let bytes = [1u8; 10];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn sha384_1k(bh: &mut Bencher) {
-        let mut engine = sha384::Hash::engine();
-        let bytes = [1u8; 1024];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn sha384_64k(bh: &mut Bencher) {
-        let mut engine = sha384::Hash::engine();
-        let bytes = [1u8; 65536];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
     }
 }

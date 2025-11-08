@@ -17,13 +17,15 @@ use internals::error::InputString;
 use self::error::ParseError;
 #[cfg(doc)]
 use crate::absolute;
-use crate::parse::{self, PrefixedHexError, UnprefixedHexError};
+use crate::parse_int::{self, PrefixedHexError, UnprefixedHexError};
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(no_inline)]
 pub use self::error::{
     ConversionError, IncompatibleHeightError, IncompatibleTimeError, ParseHeightError, ParseTimeError,
 };
+#[cfg(feature = "encoding")]
+pub use self::error::LockTimeDecoderError;
 
 /// The Threshold for deciding whether a lock time value is a height or a time (see [Bitcoin Core]).
 ///
@@ -56,8 +58,8 @@ pub const LOCK_TIME_THRESHOLD: u32 = 500_000_000;
 ///
 /// # Relevant BIPs
 ///
-/// * [BIP-65 OP_CHECKLOCKTIMEVERIFY](https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki)
-/// * [BIP-113 Median time-past as endpoint for lock-time calculations](https://github.com/bitcoin/bips/blob/master/bip-0113.mediawiki)
+/// * [BIP-0065 OP_CHECKLOCKTIMEVERIFY](https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki)
+/// * [BIP-0113 Median time-past as endpoint for lock-time calculations](https://github.com/bitcoin/bips/blob/master/bip-0113.mediawiki)
 ///
 /// # Examples
 ///
@@ -105,7 +107,7 @@ pub enum LockTime {
 impl LockTime {
     /// If transaction lock time is set to zero it is ignored, in other words a
     /// transaction with nLocktime==0 is able to be included immediately in any block.
-    pub const ZERO: LockTime = LockTime::Blocks(Height::ZERO);
+    pub const ZERO: Self = Self::Blocks(Height::ZERO);
 
     /// The number of bytes that the locktime contributes to the size of a transaction.
     pub const SIZE: usize = 4; // Serialized length of a u32.
@@ -120,16 +122,16 @@ impl LockTime {
     /// # Examples
     ///
     /// ```
-    /// # use bitcoin_units::{absolute, parse};
+    /// # use bitcoin_units::{absolute, parse_int};
     /// let hex_str = "0x61cf9980"; // Unix timestamp for January 1, 2022
     /// let lock_time = absolute::LockTime::from_hex(hex_str)?;
     /// assert_eq!(lock_time.to_consensus_u32(), 0x61cf9980);
     ///
-    /// # Ok::<_, parse::PrefixedHexError>(())
+    /// # Ok::<_, parse_int::PrefixedHexError>(())
     /// ```
     #[inline]
     pub fn from_hex(s: &str) -> Result<Self, PrefixedHexError> {
-        let lock_time = parse::hex_u32_prefixed(s)?;
+        let lock_time = parse_int::hex_u32_prefixed(s)?;
         Ok(Self::from_consensus(lock_time))
     }
 
@@ -143,20 +145,20 @@ impl LockTime {
     /// # Examples
     ///
     /// ```
-    /// # use bitcoin_units::{absolute, parse};
+    /// # use bitcoin_units::{absolute, parse_int};
     /// let hex_str = "61cf9980"; // Unix timestamp for January 1, 2022
     /// let lock_time = absolute::LockTime::from_unprefixed_hex(hex_str)?;
     /// assert_eq!(lock_time.to_consensus_u32(), 0x61cf9980);
     ///
-    /// # Ok::<_, parse::UnprefixedHexError>(())
+    /// # Ok::<_, parse_int::UnprefixedHexError>(())
     /// ```
     #[inline]
     pub fn from_unprefixed_hex(s: &str) -> Result<Self, UnprefixedHexError> {
-        let lock_time = parse::hex_u32_unprefixed(s)?;
+        let lock_time = parse_int::hex_u32_unprefixed(s)?;
         Ok(Self::from_consensus(lock_time))
     }
 
-    /// Constructs a new `LockTime` from an `nLockTime` value or the argument to `OP_CHEKCLOCKTIMEVERIFY`.
+    /// Constructs a new `LockTime` from an `nLockTime` value or the argument to `OP_CHECKLOCKTIMEVERIFY`.
     ///
     /// # Examples
     ///
@@ -202,7 +204,7 @@ impl LockTime {
     #[inline]
     pub fn from_height(n: u32) -> Result<Self, ConversionError> {
         let height = Height::from_u32(n)?;
-        Ok(LockTime::Blocks(height))
+        Ok(Self::Blocks(height))
     }
 
     #[inline]
@@ -218,9 +220,9 @@ impl LockTime {
     /// If the locktime is set to an MTP `T`, the transaction can be included in a block only if
     /// the MTP of last recent 11 blocks is greater than `T`.
     ///
-    /// It is possible to broadcast the transaction once the MTP is greater than `T`. See BIP-113.
+    /// It is possible to broadcast the transaction once the MTP is greater than `T`. See BIP-0113.
     ///
-    /// [BIP-113 Median time-past as endpoint for lock-time calculations](https://github.com/bitcoin/bips/blob/master/bip-0113.mediawiki)
+    /// [BIP-0113 Median time-past as endpoint for lock-time calculations](https://github.com/bitcoin/bips/blob/master/bip-0113.mediawiki)
     ///
     /// See [`LOCK_TIME_THRESHOLD`] for definition of a valid time value.
     ///
@@ -238,22 +240,22 @@ impl LockTime {
     #[inline]
     pub fn from_mtp(n: u32) -> Result<Self, ConversionError> {
         let time = MedianTimePast::from_u32(n)?;
-        Ok(LockTime::Seconds(time))
+        Ok(Self::Seconds(time))
     }
 
     /// Returns true if both lock times use the same unit i.e., both height based or both time based.
     #[inline]
-    pub const fn is_same_unit(self, other: LockTime) -> bool {
+    pub const fn is_same_unit(self, other: Self) -> bool {
         matches!(
             (self, other),
-            (LockTime::Blocks(_), LockTime::Blocks(_))
-                | (LockTime::Seconds(_), LockTime::Seconds(_))
+            (Self::Blocks(_), Self::Blocks(_))
+                | (Self::Seconds(_), Self::Seconds(_))
         )
     }
 
     /// Returns true if this lock time value is a block height.
     #[inline]
-    pub const fn is_block_height(self) -> bool { matches!(self, LockTime::Blocks(_)) }
+    pub const fn is_block_height(self) -> bool { matches!(self, Self::Blocks(_)) }
 
     /// Returns true if this lock time value is a block time (UNIX timestamp).
     #[inline]
@@ -264,7 +266,7 @@ impl LockTime {
     /// If `self` is a blockheight based lock then it is checked against `height` and if `self` is a
     /// blocktime based lock it is checked against `time`.
     ///
-    /// A 'timelock constraint' refers to the `n` from `n OP_CHEKCLOCKTIMEVERIFY`, this constraint
+    /// A 'timelock constraint' refers to the `n` from `n OP_CHECKLOCKTIMEVERIFY`, this constraint
     /// is satisfied if a transaction with `nLockTime` set to `height`/`time` is valid.
     ///
     /// If `height` and `mtp` represent the current chain tip then a transaction with this
@@ -283,7 +285,7 @@ impl LockTime {
     /// fn get_height() -> absolute::Height { todo!("return the current block height") }
     /// fn get_time() -> absolute::MedianTimePast { todo!("return the current block MTP") }
     ///
-    /// let n = absolute::LockTime::from_consensus(741521); // `n OP_CHEKCLOCKTIMEVERIFY`.
+    /// let n = absolute::LockTime::from_consensus(741521); // `n OP_CHECKLOCKTIMEVERIFY`.
     /// if n.is_satisfied_by(get_height(), get_time()) {
     ///     // Can create and mine a transaction that satisfies the OP_CLTV timelock constraint.
     /// }
@@ -291,8 +293,8 @@ impl LockTime {
     #[inline]
     pub fn is_satisfied_by(self, height: Height, mtp: MedianTimePast) -> bool {
         match self {
-            LockTime::Blocks(blocks) => blocks.is_satisfied_by(height),
-            LockTime::Seconds(time) => time.is_satisfied_by(mtp),
+            Self::Blocks(blocks) => blocks.is_satisfied_by(height),
+            Self::Seconds(time) => time.is_satisfied_by(mtp),
         }
     }
 
@@ -306,11 +308,11 @@ impl LockTime {
     /// Returns an error if this lock is not lock-by-height.
     #[inline]
     pub fn is_satisfied_by_height(self, height: Height) -> Result<bool, IncompatibleHeightError> {
-        use LockTime as L;
+        
 
         match self {
-            L::Blocks(blocks) => Ok(blocks.is_satisfied_by(height)),
-            L::Seconds(time) => Err(IncompatibleHeightError { lock: time, incompatible: height }),
+            Self::Blocks(blocks) => Ok(blocks.is_satisfied_by(height)),
+            Self::Seconds(time) => Err(IncompatibleHeightError { lock: time, incompatible: height }),
         }
     }
 
@@ -321,11 +323,11 @@ impl LockTime {
     /// Returns an error if this lock is not lock-by-time.
     #[inline]
     pub fn is_satisfied_by_time(self, mtp: MedianTimePast) -> Result<bool, IncompatibleTimeError> {
-        use LockTime as L;
+        
 
         match self {
-            L::Seconds(time) => Ok(time.is_satisfied_by(mtp)),
-            L::Blocks(blocks) => Err(IncompatibleTimeError { lock: blocks, incompatible: mtp }),
+            Self::Seconds(time) => Ok(time.is_satisfied_by(mtp)),
+            Self::Blocks(blocks) => Err(IncompatibleTimeError { lock: blocks, incompatible: mtp }),
         }
     }
 
@@ -355,12 +357,12 @@ impl LockTime {
     /// assert!(lock_time.is_implied_by(check));
     /// ```
     #[inline]
-    pub fn is_implied_by(self, other: LockTime) -> bool {
-        use LockTime as L;
+    pub fn is_implied_by(self, other: Self) -> bool {
+        
 
         match (self, other) {
-            (L::Blocks(this), L::Blocks(other)) => this <= other,
-            (L::Seconds(this), L::Seconds(other)) => this <= other,
+            (Self::Blocks(this), Self::Blocks(other)) => this <= other,
+            (Self::Seconds(this), Self::Seconds(other)) => this <= other,
             _ => false, // Not the same units.
         }
     }
@@ -393,49 +395,106 @@ impl LockTime {
     #[inline]
     pub fn to_consensus_u32(self) -> u32 {
         match self {
-            LockTime::Blocks(ref h) => h.to_u32(),
-            LockTime::Seconds(ref t) => t.to_u32(),
+            Self::Blocks(ref h) => h.to_u32(),
+            Self::Seconds(ref t) => t.to_u32(),
         }
     }
 }
 
-crate::impl_parse_str_from_int_infallible!(LockTime, u32, from_consensus);
+parse_int::impl_parse_str_from_int_infallible!(LockTime, u32, from_consensus);
+
+#[cfg(feature = "encoding")]
+encoding::encoder_newtype! {
+    /// The encoder for the [`LockTime`] type.
+    pub struct LockTimeEncoder(encoding::ArrayEncoder<4>);
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Encodable for LockTime {
+    type Encoder<'e> = LockTimeEncoder;
+    fn encoder(&self) -> Self::Encoder<'_> {
+        LockTimeEncoder(encoding::ArrayEncoder::without_length_prefix(
+            self.to_consensus_u32().to_le_bytes(),
+        ))
+    }
+}
+
+/// The decoder for the [`LockTime`] type.
+#[cfg(feature = "encoding")]
+pub struct LockTimeDecoder(encoding::ArrayDecoder<4>);
+
+#[cfg(feature = "encoding")]
+impl LockTimeDecoder {
+    /// Constructs a new [`LockTime`] decoder.
+    pub fn new() -> Self { Self(encoding::ArrayDecoder::new()) }
+}
+
+#[cfg(feature = "encoding")]
+impl Default for LockTimeDecoder {
+    fn default() -> Self { Self::new() }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decoder for LockTimeDecoder {
+    type Output = LockTime;
+    type Error = LockTimeDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        Ok(self.0.push_bytes(bytes).map_err(LockTimeDecoderError)?)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> {
+        let n = u32::from_le_bytes(self.0.end().map_err(LockTimeDecoderError)?);
+        Ok(LockTime::from_consensus(n))
+    }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decodable for LockTime {
+    type Decoder = LockTimeDecoder;
+    fn decoder() -> Self::Decoder { LockTimeDecoder(encoding::ArrayDecoder::<4>::new()) }
+}
 
 impl From<Height> for LockTime {
     #[inline]
-    fn from(h: Height) -> Self { LockTime::Blocks(h) }
+    fn from(h: Height) -> Self { Self::Blocks(h) }
 }
 
 impl From<MedianTimePast> for LockTime {
     #[inline]
-    fn from(t: MedianTimePast) -> Self { LockTime::Seconds(t) }
+    fn from(t: MedianTimePast) -> Self { Self::Seconds(t) }
 }
 
 impl fmt::Debug for LockTime {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use LockTime as L;
+        
 
         match *self {
-            L::Blocks(ref h) => write!(f, "{} blocks", h),
-            L::Seconds(ref t) => write!(f, "{} seconds", t),
+            Self::Blocks(ref h) => write!(f, "{} blocks", h),
+            Self::Seconds(ref t) => write!(f, "{} seconds", t),
         }
     }
 }
 
 impl fmt::Display for LockTime {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use LockTime as L;
+        
 
         if f.alternate() {
             match *self {
-                L::Blocks(ref h) => write!(f, "block-height {}", h),
-                L::Seconds(ref t) => write!(f, "block-time {} (seconds since epoch)", t),
+                Self::Blocks(ref h) => write!(f, "block-height {}", h),
+                Self::Seconds(ref t) => write!(f, "block-time {} (seconds since epoch)", t),
             }
         } else {
             match *self {
-                L::Blocks(ref h) => fmt::Display::fmt(h, f),
-                L::Seconds(ref t) => fmt::Display::fmt(t, f),
+                Self::Blocks(ref h) => fmt::Display::fmt(h, f),
+                Self::Seconds(ref t) => fmt::Display::fmt(t, f),
             }
         }
     }
@@ -467,13 +526,13 @@ pub struct Height(u32);
 
 impl Height {
     /// Absolute block height 0, the genesis block.
-    pub const ZERO: Self = Height(0);
+    pub const ZERO: Self = Self(0);
 
     /// The minimum absolute block height (0), the genesis block.
     pub const MIN: Self = Self::ZERO;
 
     /// The maximum absolute block height.
-    pub const MAX: Self = Height(LOCK_TIME_THRESHOLD - 1);
+    pub const MAX: Self = Self(LOCK_TIME_THRESHOLD - 1);
 
     /// Constructs a new [`Height`] from a hex string.
     ///
@@ -510,7 +569,7 @@ impl Height {
     /// # Ok::<_, absolute::error::ConversionError>(())
     /// ```
     #[inline]
-    pub const fn from_u32(n: u32) -> Result<Height, ConversionError> {
+    pub const fn from_u32(n: u32) -> Result<Self, ConversionError> {
         if is_block_height(n) {
             Ok(Self(n))
         } else {
@@ -535,7 +594,7 @@ impl Height {
     /// `self` is value of the `LockTime` and if `height` is the current chain tip then
     /// a transaction with this lock can be broadcast for inclusion in the next block.
     #[inline]
-    pub fn is_satisfied_by(self, height: Height) -> bool {
+    pub fn is_satisfied_by(self, height: Self) -> bool {
         // Use u64 so that there can be no overflow.
         let next_block_height = u64::from(height.to_u32()) + 1;
         u64::from(self.to_u32()) <= next_block_height
@@ -546,7 +605,7 @@ impl fmt::Display for Height {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
 }
 
-crate::impl_parse_str!(Height, ParseHeightError, parser(Height::from_u32));
+parse_int::impl_parse_str!(Height, ParseHeightError, parser(Height::from_u32));
 
 #[deprecated(since = "TBD", note = "use `MedianTimePast` instead")]
 #[doc(hidden)]
@@ -565,10 +624,10 @@ pub struct MedianTimePast(u32);
 
 impl MedianTimePast {
     /// The minimum MTP allowable in a locktime (Tue Nov 05 1985 00:53:20 GMT+0000).
-    pub const MIN: Self = MedianTimePast(LOCK_TIME_THRESHOLD);
+    pub const MIN: Self = Self(LOCK_TIME_THRESHOLD);
 
     /// The maximum MTP allowable in a locktime (Sun Feb 07 2106 06:28:15 GMT+0000).
-    pub const MAX: Self = MedianTimePast(u32::MAX);
+    pub const MAX: Self = Self(u32::MAX);
 
     /// Constructs an [`MedianTimePast`] by computing the median-time-past from the last
     /// 11 block timestamps.
@@ -650,7 +709,7 @@ impl MedianTimePast {
     /// the chain tip then a transaction with this lock can be broadcast for inclusion in the next
     /// block.
     #[inline]
-    pub fn is_satisfied_by(self, time: MedianTimePast) -> bool {
+    pub fn is_satisfied_by(self, time: Self) -> bool {
         // The locktime check in Core during block validation uses the MTP
         // of the previous block - which is the expected to be `time` here.
         self <= time
@@ -661,7 +720,7 @@ impl fmt::Display for MedianTimePast {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
 }
 
-crate::impl_parse_str!(MedianTimePast, ParseTimeError, parser(MedianTimePast::from_u32));
+parse_int::impl_parse_str!(MedianTimePast, ParseTimeError, parser(MedianTimePast::from_u32));
 
 fn parser<T, E, S, F>(f: F) -> impl FnOnce(S) -> Result<T, E>
 where
@@ -682,7 +741,7 @@ where
     S: AsRef<str> + Into<InputString>,
     F: FnOnce(u32) -> Result<T, ConversionError>,
 {
-    let n = i64::from_str_radix(parse::hex_remove_optional_prefix(s.as_ref()), 16)
+    let n = i64::from_str_radix(parse_int::hex_remove_optional_prefix(s.as_ref()), 16)
         .map_err(ParseError::invalid_int(s))?;
     let n = u32::try_from(n).map_err(|_| ParseError::Conversion(n))?;
     f(n).map_err(ParseError::from).map_err(Into::into)
@@ -698,7 +757,7 @@ pub const fn is_block_time(n: u32) -> bool { n >= LOCK_TIME_THRESHOLD }
 impl<'a> Arbitrary<'a> for LockTime {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let l = u32::arbitrary(u)?;
-        Ok(LockTime::from_consensus(l))
+        Ok(Self::from_consensus(l))
     }
 }
 
@@ -707,13 +766,13 @@ impl<'a> Arbitrary<'a> for Height {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let choice = u.int_in_range(0..=2)?;
         match choice {
-            0 => Ok(Height::MIN),
-            1 => Ok(Height::MAX),
+            0 => Ok(Self::MIN),
+            1 => Ok(Self::MAX),
             _ => {
-                let min = Height::MIN.to_u32();
-                let max = Height::MAX.to_u32();
+                let min = Self::MIN.to_u32();
+                let max = Self::MAX.to_u32();
                 let h = u.int_in_range(min..=max)?;
-                Ok(Height::from_u32(h).unwrap())
+                Ok(Self::from_u32(h).unwrap())
             }
         }
     }
@@ -724,13 +783,13 @@ impl<'a> Arbitrary<'a> for MedianTimePast {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let choice = u.int_in_range(0..=2)?;
         match choice {
-            0 => Ok(MedianTimePast::MIN),
-            1 => Ok(MedianTimePast::MAX),
+            0 => Ok(Self::MIN),
+            1 => Ok(Self::MAX),
             _ => {
-                let min = MedianTimePast::MIN.to_u32();
-                let max = MedianTimePast::MAX.to_u32();
+                let min = Self::MIN.to_u32();
+                let max = Self::MAX.to_u32();
                 let t = u.int_in_range(min..=max)?;
-                Ok(MedianTimePast::from_u32(t).unwrap())
+                Ok(Self::from_u32(t).unwrap())
             }
         }
     }

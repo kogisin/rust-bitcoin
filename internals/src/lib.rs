@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! # Rust Bitcoin Internal
+//! Rust Bitcoin Internal
 //!
 //! This crate is only meant to be used internally by crates in the
 //! [rust-bitcoin](https://github.com/rust-bitcoin) ecosystem.
 
 #![no_std]
-// Experimental features we need.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // Coding conventions.
 #![warn(missing_docs)]
 #![warn(deprecated_in_future)]
@@ -15,7 +13,7 @@
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -55,6 +53,7 @@ pub mod wrap_debug;
 #[cfg(feature = "serde")]
 #[macro_use]
 pub mod serde;
+pub mod const_casts;
 
 /// A conversion trait for unsigned integer types smaller than or equal to 64-bits.
 ///

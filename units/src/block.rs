@@ -11,10 +11,14 @@
 //! The difference between these types and the locktime types is that these types are thin wrappers
 //! whereas the locktime types contain more complex locktime specific abstractions.
 
+#[cfg(feature = "encoding")]
+use core::convert::Infallible;
 use core::{fmt, ops};
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+#[cfg(feature = "encoding")]
+use internals::write_err;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -34,7 +38,7 @@ macro_rules! impl_u32_wrapper {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
         }
 
-        crate::impl_parse_str_from_int_infallible!($newtype, u32, from);
+        crate::parse_int::impl_parse_str_from_int_infallible!($newtype, u32, from);
 
         impl From<u32> for $newtype {
             fn from(inner: u32) -> Self { Self::from_u32(inner) }
@@ -137,8 +141,87 @@ impl TryFrom<BlockHeight> for absolute::Height {
     /// An absolute locktime block height has a maximum value of [`absolute::LOCK_TIME_THRESHOLD`]
     /// minus one, while [`BlockHeight`] may take the full range of `u32`.
     fn try_from(h: BlockHeight) -> Result<Self, Self::Error> {
-        absolute::Height::from_u32(h.to_u32())
+        Self::from_u32(h.to_u32())
     }
+}
+
+#[cfg(feature = "encoding")]
+encoding::encoder_newtype! {
+    /// The encoder for the [`BlockHeight`] type.
+    pub struct BlockHeightEncoder(encoding::ArrayEncoder<4>);
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Encodable for BlockHeight {
+    type Encoder<'e> = BlockHeightEncoder;
+    fn encoder(&self) -> Self::Encoder<'_> {
+        BlockHeightEncoder(encoding::ArrayEncoder::without_length_prefix(
+            self.to_u32().to_le_bytes(),
+        ))
+    }
+}
+
+/// The decoder for the [`BlockHeight`] type.
+#[cfg(feature = "encoding")]
+pub struct BlockHeightDecoder(encoding::ArrayDecoder<4>);
+
+#[cfg(feature = "encoding")]
+impl Default for BlockHeightDecoder {
+    fn default() -> Self { Self::new() }
+}
+
+#[cfg(feature = "encoding")]
+impl BlockHeightDecoder {
+    /// Constructs a new [`BlockHeight`] decoder.
+    pub fn new() -> Self { Self(encoding::ArrayDecoder::new()) }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decoder for BlockHeightDecoder {
+    type Output = BlockHeight;
+    type Error = BlockHeightDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        self.0.push_bytes(bytes).map_err(BlockHeightDecoderError)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> {
+        let n = u32::from_le_bytes(self.0.end().map_err(BlockHeightDecoderError)?);
+        Ok(BlockHeight::from_u32(n))
+    }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decodable for BlockHeight {
+    type Decoder = BlockHeightDecoder;
+    fn decoder() -> Self::Decoder { BlockHeightDecoder(encoding::ArrayDecoder::<4>::new()) }
+}
+
+/// An error consensus decoding an `BlockHeight`.
+#[cfg(feature = "encoding")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockHeightDecoderError(encoding::UnexpectedEofError);
+
+#[cfg(feature = "encoding")]
+impl From<Infallible> for BlockHeightDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+#[cfg(feature = "encoding")]
+impl fmt::Display for BlockHeightDecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write_err!(f, "block height decoder error"; self.0)
+    }
+}
+
+#[cfg(all(feature = "std", feature = "encoding"))]
+impl std::error::Error for BlockHeightDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
 }
 
 impl_u32_wrapper! {
@@ -198,7 +281,7 @@ impl TryFrom<BlockHeightInterval> for relative::NumberOfBlocks {
     /// [`BlockHeightInterval`] is a thin wrapper around a `u32`, the two types are not interchangeable.
     fn try_from(h: BlockHeightInterval) -> Result<Self, Self::Error> {
         u16::try_from(h.to_u32())
-            .map(relative::NumberOfBlocks::from)
+            .map(Self::from)
             .map_err(|_| TooBigForRelativeHeightError(h.into()))
     }
 }
@@ -272,7 +355,7 @@ impl TryFrom<BlockMtp> for absolute::MedianTimePast {
     /// An absolute locktime MTP has a minimum value of [`absolute::LOCK_TIME_THRESHOLD`],
     /// while [`BlockMtp`] may take the full range of `u32`.
     fn try_from(h: BlockMtp) -> Result<Self, Self::Error> {
-        absolute::MedianTimePast::from_u32(h.to_u32())
+        Self::from_u32(h.to_u32())
     }
 }
 
@@ -484,35 +567,35 @@ crate::internal_macros::impl_sub_assign!(BlockMtpInterval);
 
 impl core::iter::Sum for BlockHeightInterval {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let sum = iter.map(BlockHeightInterval::to_u32).sum();
-        BlockHeightInterval::from_u32(sum)
+        let sum = iter.map(Self::to_u32).sum();
+        Self::from_u32(sum)
     }
 }
 
-impl<'a> core::iter::Sum<&'a BlockHeightInterval> for BlockHeightInterval {
+impl<'a> core::iter::Sum<&'a Self> for BlockHeightInterval {
     fn sum<I>(iter: I) -> Self
     where
-        I: Iterator<Item = &'a BlockHeightInterval>,
+        I: Iterator<Item = &'a Self>,
     {
         let sum = iter.map(|interval| interval.to_u32()).sum();
-        BlockHeightInterval::from_u32(sum)
+        Self::from_u32(sum)
     }
 }
 
 impl core::iter::Sum for BlockMtpInterval {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let sum = iter.map(BlockMtpInterval::to_u32).sum();
-        BlockMtpInterval::from_u32(sum)
+        let sum = iter.map(Self::to_u32).sum();
+        Self::from_u32(sum)
     }
 }
 
-impl<'a> core::iter::Sum<&'a BlockMtpInterval> for BlockMtpInterval {
+impl<'a> core::iter::Sum<&'a Self> for BlockMtpInterval {
     fn sum<I>(iter: I) -> Self
     where
-        I: Iterator<Item = &'a BlockMtpInterval>,
+        I: Iterator<Item = &'a Self>,
     {
         let sum = iter.map(|interval| interval.to_u32()).sum();
-        BlockMtpInterval::from_u32(sum)
+        Self::from_u32(sum)
     }
 }
 

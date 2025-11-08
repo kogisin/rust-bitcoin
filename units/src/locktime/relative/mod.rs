@@ -12,10 +12,11 @@ use core::{convert, fmt};
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+use internals::const_casts;
 
 #[cfg(doc)]
 use crate::relative;
-use crate::{BlockHeight, BlockMtp, Sequence};
+use crate::{parse_int, BlockHeight, BlockMtp, Sequence};
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(no_inline)]
@@ -37,8 +38,8 @@ pub use self::error::{
 ///
 /// # Relevant BIPs
 ///
-/// * [BIP 68 Relative lock-time using consensus-enforced sequence numbers](https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki)
-/// * [BIP 112 CHECKSEQUENCEVERIFY](https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
+/// * [BIP-0068 Relative lock-time using consensus-enforced sequence numbers](https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki)
+/// * [BIP-0112 CHECKSEQUENCEVERIFY](https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LockTime {
     /// A block height lock time value.
@@ -50,7 +51,7 @@ pub enum LockTime {
 impl LockTime {
     /// A relative locktime of 0 is always valid, and is assumed valid for inputs that
     /// are not yet confirmed.
-    pub const ZERO: LockTime = LockTime::Blocks(NumberOfBlocks::ZERO);
+    pub const ZERO: Self = Self::Blocks(NumberOfBlocks::ZERO);
 
     /// The number of bytes that the locktime contributes to the size of a transaction.
     pub const SIZE: usize = 4; // Serialized length of a u32.
@@ -100,8 +101,8 @@ impl LockTime {
     #[inline]
     pub fn to_consensus_u32(self) -> u32 {
         match self {
-            LockTime::Blocks(ref h) => u32::from(h.to_height()),
-            LockTime::Time(ref t) =>
+            Self::Blocks(ref h) => u32::from(h.to_height()),
+            Self::Time(ref t) =>
                 Sequence::LOCK_TYPE_MASK | u32::from(t.to_512_second_intervals()),
         }
     }
@@ -138,7 +139,7 @@ impl LockTime {
 
     /// Constructs a new `LockTime` from `n`, expecting `n` to be a 16-bit count of blocks.
     #[inline]
-    pub const fn from_height(n: u16) -> Self { LockTime::Blocks(NumberOfBlocks::from_height(n)) }
+    pub const fn from_height(n: u16) -> Self { Self::Blocks(NumberOfBlocks::from_height(n)) }
 
     /// Constructs a new `LockTime` from `n`, expecting `n` to be a count of 512-second intervals.
     ///
@@ -146,10 +147,10 @@ impl LockTime {
     /// [`Self::from_seconds_floor`] or [`Self::from_seconds_ceil`].
     #[inline]
     pub const fn from_512_second_intervals(intervals: u16) -> Self {
-        LockTime::Time(NumberOf512Seconds::from_512_second_intervals(intervals))
+        Self::Time(NumberOf512Seconds::from_512_second_intervals(intervals))
     }
 
-    /// Construct a new [`LockTime`] from seconds, converting the seconds into 512 second interval
+    /// Constructs a new [`LockTime`] from seconds, converting the seconds into 512 second interval
     /// with truncating division.
     ///
     /// # Errors
@@ -158,12 +159,12 @@ impl LockTime {
     #[inline]
     pub const fn from_seconds_floor(seconds: u32) -> Result<Self, TimeOverflowError> {
         match NumberOf512Seconds::from_seconds_floor(seconds) {
-            Ok(time) => Ok(LockTime::Time(time)),
+            Ok(time) => Ok(Self::Time(time)),
             Err(e) => Err(e),
         }
     }
 
-    /// Construct a new [`LockTime`] from seconds, converting the seconds into 512 second interval
+    /// Constructs a new [`LockTime`] from seconds, converting the seconds into 512 second interval
     /// with ceiling division.
     ///
     /// # Errors
@@ -172,23 +173,23 @@ impl LockTime {
     #[inline]
     pub const fn from_seconds_ceil(seconds: u32) -> Result<Self, TimeOverflowError> {
         match NumberOf512Seconds::from_seconds_ceil(seconds) {
-            Ok(time) => Ok(LockTime::Time(time)),
+            Ok(time) => Ok(Self::Time(time)),
             Err(e) => Err(e),
         }
     }
 
     /// Returns true if both lock times use the same unit i.e., both height based or both time based.
     #[inline]
-    pub const fn is_same_unit(self, other: LockTime) -> bool {
+    pub const fn is_same_unit(self, other: Self) -> bool {
         matches!(
             (self, other),
-            (LockTime::Blocks(_), LockTime::Blocks(_)) | (LockTime::Time(_), LockTime::Time(_))
+            (Self::Blocks(_), Self::Blocks(_)) | (Self::Time(_), Self::Time(_))
         )
     }
 
     /// Returns true if this lock time value is in units of block height.
     #[inline]
-    pub const fn is_block_height(self) -> bool { matches!(self, LockTime::Blocks(_)) }
+    pub const fn is_block_height(self) -> bool { matches!(self, Self::Blocks(_)) }
 
     /// Returns true if this lock time value is in units of time.
     #[inline]
@@ -210,10 +211,10 @@ impl LockTime {
         utxo_mined_at_mtp: BlockMtp,
     ) -> Result<bool, IsSatisfiedByError> {
         match self {
-            LockTime::Blocks(blocks) => blocks
+            Self::Blocks(blocks) => blocks
                 .is_satisfied_by(chain_tip_height, utxo_mined_at_height)
                 .map_err(IsSatisfiedByError::Blocks),
-            LockTime::Time(time) => time
+            Self::Time(time) => time
                 .is_satisfied_by(chain_tip_mtp, utxo_mined_at_mtp)
                 .map_err(IsSatisfiedByError::Time),
         }
@@ -233,13 +234,13 @@ impl LockTime {
         chain_tip: BlockHeight,
         utxo_mined_at: BlockHeight,
     ) -> Result<bool, IsSatisfiedByHeightError> {
-        use LockTime as L;
+        
 
         match self {
-            L::Blocks(blocks) => blocks
+            Self::Blocks(blocks) => blocks
                 .is_satisfied_by(chain_tip, utxo_mined_at)
                 .map_err(IsSatisfiedByHeightError::Satisfaction),
-            L::Time(time) => Err(IsSatisfiedByHeightError::Incompatible(time)),
+            Self::Time(time) => Err(IsSatisfiedByHeightError::Incompatible(time)),
         }
     }
 
@@ -257,13 +258,13 @@ impl LockTime {
         chain_tip: BlockMtp,
         utxo_mined_at: BlockMtp,
     ) -> Result<bool, IsSatisfiedByTimeError> {
-        use LockTime as L;
+        
 
         match self {
-            L::Time(time) => time
+            Self::Time(time) => time
                 .is_satisfied_by(chain_tip, utxo_mined_at)
                 .map_err(IsSatisfiedByTimeError::Satisfaction),
-            L::Blocks(blocks) => Err(IsSatisfiedByTimeError::Incompatible(blocks)),
+            Self::Blocks(blocks) => Err(IsSatisfiedByTimeError::Incompatible(blocks)),
         }
     }
 
@@ -297,12 +298,12 @@ impl LockTime {
     /// assert!(satisfied);
     /// ```
     #[inline]
-    pub fn is_implied_by(self, other: LockTime) -> bool {
-        use LockTime as L;
+    pub fn is_implied_by(self, other: Self) -> bool {
+        
 
         match (self, other) {
-            (L::Blocks(this), L::Blocks(other)) => this <= other,
-            (L::Time(this), L::Time(other)) => this <= other,
+            (Self::Blocks(this), Self::Blocks(other)) => this <= other,
+            (Self::Time(this), Self::Time(other)) => this <= other,
             _ => false, // Not the same units.
         }
     }
@@ -329,7 +330,7 @@ impl LockTime {
     /// ```
     #[inline]
     pub fn is_implied_by_sequence(self, other: Sequence) -> bool {
-        if let Ok(other) = LockTime::from_sequence(other) {
+        if let Ok(other) = Self::from_sequence(other) {
             self.is_implied_by(other)
         } else {
             false
@@ -339,27 +340,27 @@ impl LockTime {
 
 impl From<NumberOfBlocks> for LockTime {
     #[inline]
-    fn from(h: NumberOfBlocks) -> Self { LockTime::Blocks(h) }
+    fn from(h: NumberOfBlocks) -> Self { Self::Blocks(h) }
 }
 
 impl From<NumberOf512Seconds> for LockTime {
     #[inline]
-    fn from(t: NumberOf512Seconds) -> Self { LockTime::Time(t) }
+    fn from(t: NumberOf512Seconds) -> Self { Self::Time(t) }
 }
 
 impl fmt::Display for LockTime {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use LockTime as L;
+        
 
         if f.alternate() {
             match *self {
-                L::Blocks(ref h) => write!(f, "block-height {}", h),
-                L::Time(ref t) => write!(f, "block-time {} (512 second intervals)", t),
+                Self::Blocks(ref h) => write!(f, "block-height {}", h),
+                Self::Time(ref t) => write!(f, "block-time {} (512 second intervals)", t),
             }
         } else {
             match *self {
-                L::Blocks(ref h) => fmt::Display::fmt(h, f),
-                L::Time(ref t) => fmt::Display::fmt(t, f),
+                Self::Blocks(ref h) => fmt::Display::fmt(h, f),
+                Self::Time(ref t) => fmt::Display::fmt(t, f),
             }
         }
     }
@@ -368,14 +369,14 @@ impl fmt::Display for LockTime {
 impl convert::TryFrom<Sequence> for LockTime {
     type Error = DisabledLockTimeError;
     #[inline]
-    fn try_from(seq: Sequence) -> Result<LockTime, DisabledLockTimeError> {
-        LockTime::from_sequence(seq)
+    fn try_from(seq: Sequence) -> Result<Self, DisabledLockTimeError> {
+        Self::from_sequence(seq)
     }
 }
 
 impl From<LockTime> for Sequence {
     #[inline]
-    fn from(lt: LockTime) -> Sequence { lt.to_sequence() }
+    fn from(lt: LockTime) -> Self { lt.to_sequence() }
 }
 
 #[cfg(feature = "serde")]
@@ -469,10 +470,10 @@ impl NumberOfBlocks {
 
 impl From<u16> for NumberOfBlocks {
     #[inline]
-    fn from(value: u16) -> Self { NumberOfBlocks(value) }
+    fn from(value: u16) -> Self { Self(value) }
 }
 
-crate::impl_parse_str_from_int_infallible!(NumberOfBlocks, u16, from);
+parse_int::impl_parse_str_from_int_infallible!(NumberOfBlocks, u16, from);
 
 impl fmt::Display for NumberOfBlocks {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
@@ -484,26 +485,26 @@ pub type Time = NumberOf512Seconds;
 
 /// A relative lock time lock-by-time value.
 ///
-/// For BIP 68 relative lock-by-time locks, time is measured in 512 second intervals.
+/// For BIP-0068 relative lock-by-time locks, time is measured in 512 second intervals.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NumberOf512Seconds(u16);
 
 impl NumberOf512Seconds {
     /// Relative block time 0, can be included in any block.
-    pub const ZERO: Self = NumberOf512Seconds(0);
+    pub const ZERO: Self = Self(0);
 
     /// The minimum relative block time (0), can be included in any block.
-    pub const MIN: Self = NumberOf512Seconds::ZERO;
+    pub const MIN: Self = Self::ZERO;
 
     /// The maximum relative block time (33,554,432 seconds or approx 388 days).
-    pub const MAX: Self = NumberOf512Seconds(u16::MAX);
+    pub const MAX: Self = Self(u16::MAX);
 
     /// Constructs a new [`NumberOf512Seconds`] using time intervals where each interval is
     /// equivalent to 512 seconds.
     ///
     /// Encoding finer granularity of time for relative lock-times is not supported in Bitcoin.
     #[inline]
-    pub const fn from_512_second_intervals(intervals: u16) -> Self { NumberOf512Seconds(intervals) }
+    pub const fn from_512_second_intervals(intervals: u16) -> Self { Self(intervals) }
 
     /// Express the [`NumberOf512Seconds`] as an integer number of 512-second intervals.
     #[inline]
@@ -521,7 +522,7 @@ impl NumberOf512Seconds {
     pub const fn from_seconds_floor(seconds: u32) -> Result<Self, TimeOverflowError> {
         let interval = seconds / 512;
         if interval <= u16::MAX as u32 { // infallible cast, needed by const code
-            Ok(NumberOf512Seconds::from_512_second_intervals(interval as u16)) // Cast checked above, needed by const code.
+            Ok(Self::from_512_second_intervals(interval as u16)) // Cast checked above, needed by const code.
         } else {
             Err(TimeOverflowError { seconds })
         }
@@ -537,8 +538,8 @@ impl NumberOf512Seconds {
     #[rustfmt::skip] // moves comments to unrelated code
     pub const fn from_seconds_ceil(seconds: u32) -> Result<Self, TimeOverflowError> {
         if seconds <= u16::MAX as u32 * 512 {
-            let interval = (seconds + 511) / 512;
-            Ok(NumberOf512Seconds::from_512_second_intervals(interval as u16)) // Cast checked above, needed by const code.
+            let interval = seconds.div_ceil(512);
+            Ok(Self::from_512_second_intervals(interval as u16)) // Cast checked above, needed by const code.
         } else {
             Err(TimeOverflowError { seconds })
         }
@@ -546,9 +547,7 @@ impl NumberOf512Seconds {
 
     /// Represents the [`NumberOf512Seconds`] as an integer number of seconds.
     #[inline]
-    pub const fn to_seconds(self) -> u32 {
-        self.0 as u32 * 512 // u16->u32 cast ok, const context
-    }
+    pub const fn to_seconds(self) -> u32 { const_casts::u16_to_u32(self.0) * 512 }
 
     /// Returns the inner `u16` value.
     #[inline]
@@ -588,7 +587,7 @@ impl NumberOf512Seconds {
     }
 }
 
-crate::impl_parse_str_from_int_infallible!(NumberOf512Seconds, u16, from_512_second_intervals);
+parse_int::impl_parse_str_from_int_infallible!(NumberOf512Seconds, u16, from_512_second_intervals);
 
 impl fmt::Display for NumberOf512Seconds {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
@@ -600,9 +599,9 @@ impl<'a> Arbitrary<'a> for NumberOfBlocks {
         let choice = u.int_in_range(0..=2)?;
 
         match choice {
-            0 => Ok(NumberOfBlocks::MIN),
-            1 => Ok(NumberOfBlocks::MAX),
-            _ => Ok(NumberOfBlocks::from_height(u16::arbitrary(u)?)),
+            0 => Ok(Self::MIN),
+            1 => Ok(Self::MAX),
+            _ => Ok(Self::from_height(u16::arbitrary(u)?)),
         }
     }
 }
@@ -613,9 +612,9 @@ impl<'a> Arbitrary<'a> for NumberOf512Seconds {
         let choice = u.int_in_range(0..=2)?;
 
         match choice {
-            0 => Ok(NumberOf512Seconds::MIN),
-            1 => Ok(NumberOf512Seconds::MAX),
-            _ => Ok(NumberOf512Seconds::from_512_second_intervals(u16::arbitrary(u)?)),
+            0 => Ok(Self::MIN),
+            1 => Ok(Self::MAX),
+            _ => Ok(Self::from_512_second_intervals(u16::arbitrary(u)?)),
         }
     }
 }

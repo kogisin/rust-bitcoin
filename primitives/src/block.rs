@@ -7,23 +7,40 @@
 //! module describes structures and functions needed to describe
 //! these blocks and the blockchain.
 
+use core::convert::Infallible;
 use core::fmt;
 #[cfg(feature = "alloc")]
 use core::marker::PhantomData;
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
-use hashes::{sha256d, HashEngine as _};
-use units::BlockTime;
-
-use crate::merkle_tree::TxMerkleNode;
+use encoding::Encodable;
 #[cfg(feature = "alloc")]
-use crate::merkle_tree::WitnessMerkleNode;
-use crate::pow::CompactTarget;
+use encoding::{CompactSizeEncoder, Decodable, Decoder, Decoder6, Encoder2, SliceEncoder};
+use hashes::{sha256d, HashEngine as _};
+use internals::write_err;
+
+#[cfg(feature = "alloc")]
+use crate::pow::{CompactTargetDecoder, CompactTargetDecoderError};
 #[cfg(feature = "alloc")]
 use crate::prelude::Vec;
 #[cfg(feature = "alloc")]
-use crate::transaction::Transaction;
+use crate::transaction::{TxMerkleNodeDecoder, TxMerkleNodeDecoderError};
+use crate::{BlockTime, CompactTarget, TxMerkleNode};
+#[cfg(feature = "alloc")]
+use crate::{BlockTimeDecoder, BlockTimeDecoderError, Transaction, WitnessMerkleNode};
+
+#[rustfmt::skip]                // Keep public re-exports separate.
+#[doc(inline)]
+pub use units::block::{BlockHeight, BlockHeightDecoder, BlockHeightEncoder, BlockHeightInterval, BlockMtp, BlockMtpInterval};
+// Re-export errors that appear directly in the API - but no doc inline.
+#[doc(no_inline)]
+pub use units::block::{BlockHeightDecoderError, TooBigForRelativeHeightError};
+
+#[doc(inline)]
+pub use crate::hash_types::{
+    BlockHash, BlockHashDecoder, BlockHashDecoderError, BlockHashEncoder, WitnessCommitment,
+};
 
 /// Marker for whether or not a block has been validated.
 ///
@@ -52,7 +69,6 @@ pub trait Validation: sealed::Validation + Sync + Send + Sized + Unpin {
 /// * [CBlock definition](https://github.com/bitcoin/bitcoin/blob/345457b542b6a980ccfbc868af0970a6f91d1b82/src/primitives/block.h#L62)
 #[cfg(feature = "alloc")]
 #[derive(PartialEq, Eq, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Block<V = Unchecked>
 where
     V: Validation,
@@ -61,8 +77,7 @@ where
     header: Header,
     /// List of transactions contained in the block
     transactions: Vec<Transaction>,
-    /// Cached witness root if its been computed.
-    #[cfg_attr(feature = "serde", serde(skip_serializing))]
+    /// Cached witness root if it's been computed.
     witness_root: Option<WitnessMerkleNode>,
     /// Validation marker.
     marker: PhantomData<V>,
@@ -72,8 +87,8 @@ where
 impl Block<Unchecked> {
     /// Constructs a new `Block` without doing any validation.
     #[inline]
-    pub fn new_unchecked(header: Header, transactions: Vec<Transaction>) -> Block<Unchecked> {
-        Block { header, transactions, witness_root: None, marker: PhantomData::<Unchecked> }
+    pub fn new_unchecked(header: Header, transactions: Vec<Transaction>) -> Self {
+        Self { header, transactions, witness_root: None, marker: PhantomData::<Unchecked> }
     }
 
     /// Ignores block validation logic and just assumes you know what you are doing.
@@ -123,13 +138,13 @@ impl<V: Validation> Block<V> {
 #[cfg(feature = "alloc")]
 impl From<Block> for BlockHash {
     #[inline]
-    fn from(block: Block) -> BlockHash { block.block_hash() }
+    fn from(block: Block) -> Self { block.block_hash() }
 }
 
 #[cfg(feature = "alloc")]
 impl From<&Block> for BlockHash {
     #[inline]
-    fn from(block: &Block) -> BlockHash { block.block_hash() }
+    fn from(block: &Block) -> Self { block.block_hash() }
 }
 
 /// Marker that the block's merkle root has been successfully validated.
@@ -160,6 +175,32 @@ mod sealed {
     impl Validation for super::Unchecked {}
 }
 
+#[cfg(feature = "alloc")]
+encoding::encoder_newtype! {
+    /// The encoder for the [`Block`] type.
+    pub struct BlockEncoder<'e>(
+        Encoder2<HeaderEncoder, Encoder2<CompactSizeEncoder, SliceEncoder<'e, Transaction>>>
+    );
+}
+
+#[cfg(feature = "alloc")]
+impl Encodable for Block {
+    type Encoder<'e>
+        = Encoder2<HeaderEncoder, Encoder2<CompactSizeEncoder, SliceEncoder<'e, Transaction>>>
+    where
+        Self: 'e;
+
+    fn encoder(&self) -> Self::Encoder<'_> {
+        Encoder2::new(
+            self.header.encoder(),
+            Encoder2::new(
+                CompactSizeEncoder::new(self.transactions.len()),
+                SliceEncoder::without_length_prefix(&self.transactions),
+            ),
+        )
+    }
+}
+
 /// Bitcoin block header.
 ///
 /// Contains all the block's information except the actual transactions, but
@@ -171,7 +212,6 @@ mod sealed {
 ///
 /// * [CBlockHeader definition](https://github.com/bitcoin/bitcoin/blob/345457b542b6a980ccfbc868af0970a6f91d1b82/src/primitives/block.h#L20)
 #[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Header {
     /// Block version, now repurposed for soft fork signalling.
     pub version: Version,
@@ -195,15 +235,8 @@ impl Header {
     /// Returns the block hash.
     // This is the same as `Encodable` but done manually because `Encodable` isn't in `primitives`.
     pub fn block_hash(&self) -> BlockHash {
-        let mut engine = sha256d::Hash::engine();
-        engine.input(&self.version.to_consensus().to_le_bytes());
-        engine.input(self.prev_blockhash.as_byte_array());
-        engine.input(self.merkle_root.as_byte_array());
-        engine.input(&self.time.to_u32().to_le_bytes());
-        engine.input(&self.bits.to_consensus().to_le_bytes());
-        engine.input(&self.nonce.to_le_bytes());
-
-        BlockHash::from_byte_array(sha256d::Hash::from_engine(engine).to_byte_array())
+        let bare_hash = hashes::encode_to_engine(self, sha256d::Hash::engine()).finalize();
+        BlockHash::from_byte_array(bare_hash.to_byte_array())
     }
 }
 
@@ -211,7 +244,7 @@ impl Header {
 impl fmt::Display for Header {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use fmt::Write as _;
-        use hex::DisplayHex as _;
+        use hex_unstable::DisplayHex as _;
 
         let mut buf = arrayvec::ArrayString::<160>::new();
         write!(
@@ -243,29 +276,176 @@ impl fmt::Debug for Header {
     }
 }
 
+encoding::encoder_newtype! {
+    /// The encoder for the [`Header`] type.
+    pub struct HeaderEncoder(
+        encoding::Encoder6<
+            VersionEncoder,
+            BlockHashEncoder,
+            crate::merkle_tree::TxMerkleNodeEncoder,
+            crate::time::BlockTimeEncoder,
+            crate::pow::CompactTargetEncoder,
+            encoding::ArrayEncoder<4>,
+        >
+    );
+}
+
+impl Encodable for Header {
+    type Encoder<'e> = HeaderEncoder;
+
+    fn encoder(&self) -> Self::Encoder<'_> {
+        HeaderEncoder(encoding::Encoder6::new(
+            self.version.encoder(),
+            self.prev_blockhash.encoder(),
+            self.merkle_root.encoder(),
+            self.time.encoder(),
+            self.bits.encoder(),
+            encoding::ArrayEncoder::without_length_prefix(self.nonce.to_le_bytes()),
+        ))
+    }
+}
+
+#[cfg(feature = "alloc")]
+type HeaderInnerDecoder = Decoder6<
+    VersionDecoder,
+    BlockHashDecoder,
+    TxMerkleNodeDecoder,
+    BlockTimeDecoder,
+    CompactTargetDecoder,
+    encoding::ArrayDecoder<4>, // Nonce
+>;
+
+/// The decoder for the [`Header`] type.
+#[cfg(feature = "alloc")]
+pub struct HeaderDecoder(HeaderInnerDecoder);
+
+#[cfg(feature = "alloc")]
+impl HeaderDecoder {
+    fn from_inner(e: <HeaderInnerDecoder as Decoder>::Error) -> HeaderDecoderError {
+        match e {
+            encoding::Decoder6Error::First(e) => HeaderDecoderError::Version(e),
+            encoding::Decoder6Error::Second(e) => HeaderDecoderError::PrevBlockhash(e),
+            encoding::Decoder6Error::Third(e) => HeaderDecoderError::MerkleRoot(e),
+            encoding::Decoder6Error::Fourth(e) => HeaderDecoderError::Time(e),
+            encoding::Decoder6Error::Fifth(e) => HeaderDecoderError::Bits(e),
+            encoding::Decoder6Error::Sixth(e) => HeaderDecoderError::Nonce(e),
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl Decoder for HeaderDecoder {
+    type Output = Header;
+    type Error = HeaderDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        self.0.push_bytes(bytes).map_err(Self::from_inner)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> {
+        let (version, prev_blockhash, merkle_root, time, bits, nonce) =
+            self.0.end().map_err(Self::from_inner)?;
+        let nonce = u32::from_le_bytes(nonce);
+        Ok(Header { version, prev_blockhash, merkle_root, time, bits, nonce })
+    }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+#[cfg(feature = "alloc")]
+impl Decodable for Header {
+    type Decoder = HeaderDecoder;
+    fn decoder() -> Self::Decoder {
+        HeaderDecoder(Decoder6::new(
+            VersionDecoder::new(),
+            BlockHashDecoder::new(),
+            TxMerkleNodeDecoder::new(),
+            BlockTimeDecoder::new(),
+            CompactTargetDecoder::new(),
+            encoding::ArrayDecoder::new(),
+        ))
+    }
+}
+
+/// An error consensus decoding a `Header`.
+#[cfg(feature = "alloc")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HeaderDecoderError {
+    /// Error while decoding the `version`.
+    Version(VersionDecoderError),
+    /// Error while decoding the `prev_blockhash`.
+    PrevBlockhash(BlockHashDecoderError),
+    /// Error while decoding the `merkle_root`.
+    MerkleRoot(TxMerkleNodeDecoderError),
+    /// Error while decoding the `time`.
+    Time(BlockTimeDecoderError),
+    /// Error while decoding the `bits`.
+    Bits(CompactTargetDecoderError),
+    /// Error while decoding the `nonce`.
+    Nonce(encoding::UnexpectedEofError),
+}
+
+#[cfg(feature = "alloc")]
+impl From<Infallible> for HeaderDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+#[cfg(feature = "alloc")]
+impl fmt::Display for HeaderDecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::Version(ref e) => write_err!(f, "header decoder error"; e),
+            Self::PrevBlockhash(ref e) => write_err!(f, "header decoder error"; e),
+            Self::MerkleRoot(ref e) => write_err!(f, "header decoder error"; e),
+            Self::Time(ref e) => write_err!(f, "header decoder error"; e),
+            Self::Bits(ref e) => write_err!(f, "header decoder error"; e),
+            Self::Nonce(ref e) => write_err!(f, "header decoder error"; e),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+#[cfg(feature = "alloc")]
+impl std::error::Error for HeaderDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match *self {
+            Self::Version(ref e) => Some(e),
+            Self::PrevBlockhash(ref e) => Some(e),
+            Self::MerkleRoot(ref e) => Some(e),
+            Self::Time(ref e) => Some(e),
+            Self::Bits(ref e) => Some(e),
+            Self::Nonce(ref e) => Some(e),
+        }
+    }
+}
+
 impl From<Header> for BlockHash {
     #[inline]
-    fn from(header: Header) -> BlockHash { header.block_hash() }
+    fn from(header: Header) -> Self { header.block_hash() }
 }
 
 impl From<&Header> for BlockHash {
     #[inline]
-    fn from(header: &Header) -> BlockHash { header.block_hash() }
+    fn from(header: &Header) -> Self { header.block_hash() }
 }
 
 /// Bitcoin block version number.
 ///
 /// Originally used as a protocol version, but repurposed for soft-fork signaling.
 ///
-/// The inner value is a signed integer in Bitcoin Core for historical reasons, if version bits is
+/// The inner value is a signed integer in Bitcoin Core for historical reasons, if the version bits are
 /// being used the top three bits must be 001, this gives us a useful range of [0x20000000...0x3FFFFFFF].
 ///
 /// > When a block nVersion does not have top bits 001, it is treated as if all bits are 0 for the purposes of deployments.
 ///
 /// # Relevant BIPs
 ///
-/// * [BIP9 - Version bits with timeout and delay](https://github.com/bitcoin/bips/blob/master/bip-0009.mediawiki) (current usage)
-/// * [BIP34 - Block v2, Height in Coinbase](https://github.com/bitcoin/bips/blob/master/bip-0034.mediawiki)
+/// * [BIP-0009 - Version bits with timeout and delay](https://github.com/bitcoin/bips/blob/master/bip-0009.mediawiki) (current usage)
+/// * [BIP-0034 - Block v2, Height in Coinbase](https://github.com/bitcoin/bips/blob/master/bip-0034.mediawiki)
 #[derive(Copy, PartialEq, Eq, Clone, Debug, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Version(i32);
@@ -274,13 +454,13 @@ impl Version {
     /// The original Bitcoin Block v1.
     pub const ONE: Self = Self(1);
 
-    /// BIP-34 Block v2.
+    /// BIP-0034 Block v2.
     pub const TWO: Self = Self(2);
 
-    /// BIP-9 compatible version number that does not signal for any softforks.
+    /// BIP-0009 compatible version number that does not signal for any softforks.
     pub const NO_SOFT_FORK_SIGNALLING: Self = Self(Self::USE_VERSION_BITS as i32);
 
-    /// BIP-9 soft fork signal bits mask.
+    /// BIP-0009 soft fork signal bits mask.
     const VERSION_BITS_MASK: u32 = 0x1FFF_FFFF;
 
     /// 32bit value starting with `001` to use version bits.
@@ -292,7 +472,7 @@ impl Version {
     ///
     /// This is the data type used in consensus code in Bitcoin Core.
     #[inline]
-    pub const fn from_consensus(v: i32) -> Self { Version(v) }
+    pub const fn from_consensus(v: i32) -> Self { Self(v) }
 
     /// Returns the inner `i32` value.
     ///
@@ -302,7 +482,7 @@ impl Version {
 
     /// Checks whether the version number is signalling a soft fork at the given bit.
     ///
-    /// A block is signalling for a soft fork under BIP-9 if the first 3 bits are `001` and
+    /// A block is signalling for a soft fork under BIP-0009 if the first 3 bits are `001` and
     /// the version bit for the specific soft fork is toggled on.
     pub fn is_signalling_soft_fork(self, bit: u8) -> bool {
         // Only bits [0, 28] inclusive are used for signalling.
@@ -322,26 +502,80 @@ impl Version {
 
 impl Default for Version {
     #[inline]
-    fn default() -> Version { Self::NO_SOFT_FORK_SIGNALLING }
+    fn default() -> Self { Self::NO_SOFT_FORK_SIGNALLING }
 }
 
-hashes::hash_newtype! {
-    /// A bitcoin block hash.
-    pub struct BlockHash(sha256d::Hash);
-    /// A hash corresponding to the witness structure commitment in the coinbase transaction.
-    pub struct WitnessCommitment(sha256d::Hash);
+encoding::encoder_newtype! {
+    /// The encoder for the [`Version`] type.
+    pub struct VersionEncoder(encoding::ArrayEncoder<4>);
 }
 
-#[cfg(feature = "hex")]
-hashes::impl_hex_for_newtype!(BlockHash, WitnessCommitment);
-#[cfg(not(feature = "hex"))]
-hashes::impl_debug_only_for_newtype!(BlockHash, WitnessCommitment);
-#[cfg(feature = "serde")]
-hashes::impl_serde_for_newtype!(BlockHash, WitnessCommitment);
+impl Encodable for Version {
+    type Encoder<'e> = VersionEncoder;
+    fn encoder(&self) -> Self::Encoder<'_> {
+        VersionEncoder(encoding::ArrayEncoder::without_length_prefix(
+            self.to_consensus().to_le_bytes(),
+        ))
+    }
+}
 
-impl BlockHash {
-    /// Dummy hash used as the previous blockhash of the genesis block.
-    pub const GENESIS_PREVIOUS_BLOCK_HASH: Self = Self::from_byte_array([0; 32]);
+/// The decoder for the [`Version`] type.
+pub struct VersionDecoder(encoding::ArrayDecoder<4>);
+
+impl VersionDecoder {
+    /// Constructs a new [`Version`] decoder.
+    pub fn new() -> Self { Self(encoding::ArrayDecoder::new()) }
+}
+
+impl Default for VersionDecoder {
+    fn default() -> Self { Self::new() }
+}
+
+impl encoding::Decoder for VersionDecoder {
+    type Output = Version;
+    type Error = VersionDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        Ok(self.0.push_bytes(bytes)?)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> {
+        let n = i32::from_le_bytes(self.0.end()?);
+        Ok(Version::from_consensus(n))
+    }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+impl encoding::Decodable for Version {
+    type Decoder = VersionDecoder;
+    fn decoder() -> Self::Decoder { VersionDecoder(encoding::ArrayDecoder::<4>::new()) }
+}
+
+/// An error consensus decoding an `Version`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionDecoderError(encoding::UnexpectedEofError);
+
+impl From<Infallible> for VersionDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+impl From<encoding::UnexpectedEofError> for VersionDecoderError {
+    fn from(e: encoding::UnexpectedEofError) -> Self { Self(e) }
+}
+
+impl fmt::Display for VersionDecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write_err!(f, "version decoder error"; self.0)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for VersionDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
 }
 
 #[cfg(feature = "arbitrary")]
@@ -350,21 +584,14 @@ impl<'a> Arbitrary<'a> for Block {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let header = Header::arbitrary(u)?;
         let transactions = Vec::<Transaction>::arbitrary(u)?;
-        Ok(Block::new_unchecked(header, transactions))
-    }
-}
-
-#[cfg(feature = "arbitrary")]
-impl<'a> Arbitrary<'a> for BlockHash {
-    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(BlockHash::from_byte_array(u.arbitrary()?))
+        Ok(Self::new_unchecked(header, transactions))
     }
 }
 
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for Header {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(Header {
+        Ok(Self {
             version: Version::arbitrary(u)?,
             prev_blockhash: BlockHash::from_byte_array(u.arbitrary()?),
             merkle_root: TxMerkleNode::from_byte_array(u.arbitrary()?),
@@ -381,16 +608,19 @@ impl<'a> Arbitrary<'a> for Version {
         // Equally weight known versions and arbitrary versions
         let choice = u.int_in_range(0..=3)?;
         match choice {
-            0 => Ok(Version::ONE),
-            1 => Ok(Version::TWO),
-            2 => Ok(Version::NO_SOFT_FORK_SIGNALLING),
-            _ => Ok(Version::from_consensus(u.arbitrary()?)),
+            0 => Ok(Self::ONE),
+            1 => Ok(Self::TWO),
+            2 => Ok(Self::NO_SOFT_FORK_SIGNALLING),
+            _ => Ok(Self::from_consensus(u.arbitrary()?)),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "alloc")]
+    use alloc::{format, vec};
+
     use super::*;
 
     fn dummy_header() -> Header {
@@ -450,7 +680,7 @@ mod tests {
         let header = dummy_header();
 
         // Calculate the size of the block header in bytes from the sum of the serialized lengths
-        // it's fields: version, prev_blockhash, merkle_root, time, bits, nonce.
+        // its fields: version, prev_blockhash, merkle_root, time, bits, nonce.
         let header_size = header.version.to_consensus().to_le_bytes().len()
             + header.prev_blockhash.as_byte_array().len()
             + header.merkle_root.as_byte_array().len()
@@ -550,6 +780,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "alloc")]
     fn header_debug() {
         let header = dummy_header();
         let expected = format!(
@@ -567,6 +798,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "hex")]
+    #[cfg(feature = "alloc")]
     fn header_display() {
         let seconds: u32 = 1_653_195_600; // Arbitrary timestamp: May 22nd, 5am UTC.
 

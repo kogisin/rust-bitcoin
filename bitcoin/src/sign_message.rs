@@ -76,8 +76,8 @@ mod message_signing {
     }
 
     impl From<secp256k1::Error> for MessageSignatureError {
-        fn from(e: secp256k1::Error) -> MessageSignatureError {
-            MessageSignatureError::InvalidEncoding(e)
+        fn from(e: secp256k1::Error) -> Self {
+            Self::InvalidEncoding(e)
         }
     }
 
@@ -96,11 +96,11 @@ mod message_signing {
 
     impl MessageSignature {
         /// Constructs a new [MessageSignature].
-        pub fn new(signature: RecoverableSignature, compressed: bool) -> MessageSignature {
-            MessageSignature { signature, compressed }
+        pub fn new(signature: RecoverableSignature, compressed: bool) -> Self {
+            Self { signature, compressed }
         }
 
-        /// Serialize to bytes.
+        /// Serializes to bytes.
         pub fn serialize(&self) -> [u8; 65] {
             let (recid, raw) = self.signature.serialize_compact();
             let mut serialized = [0u8; 65];
@@ -110,13 +110,13 @@ mod message_signing {
         }
 
         /// Constructs a new `MessageSignature` from a fixed-length array.
-        pub fn from_byte_array(bytes: &[u8; 65]) -> Result<MessageSignature, secp256k1::Error> {
+        pub fn from_byte_array(bytes: &[u8; 65]) -> Result<Self, secp256k1::Error> {
             // We just check this here so we can safely subtract further.
             if bytes[0] < 27 {
                 return Err(secp256k1::Error::InvalidRecoveryId);
             };
             let recid = RecoveryId::try_from(((bytes[0] - 27) & 0x03) as i32)?;
-            Ok(MessageSignature {
+            Ok(Self {
                 signature: RecoverableSignature::from_compact(&bytes[1..], recid)?,
                 compressed: ((bytes[0] - 27) & 0x04) != 0,
             })
@@ -124,7 +124,7 @@ mod message_signing {
 
         /// Constructs a new `MessageSignature` from a byte slice.
         #[deprecated(since = "TBD", note = "use `from_byte_array` instead")]
-        pub fn from_slice(bytes: &[u8]) -> Result<MessageSignature, MessageSignatureError> {
+        pub fn from_slice(bytes: &[u8]) -> Result<Self, MessageSignatureError> {
             let byte_array: [u8; 65] =
                 bytes.try_into().map_err(|_| MessageSignatureError::InvalidLength)?;
             Self::from_byte_array(&byte_array).map_err(MessageSignatureError::from)
@@ -143,7 +143,7 @@ mod message_signing {
             Ok(PublicKey { inner: pubkey, compressed: self.compressed })
         }
 
-        /// Verify that the signature signs the message and was signed by the given address.
+        /// Verifies that the signature signs the message and was signed by the given address.
         ///
         /// To get the message hash from a message, use [super::signed_msg_hash].
         pub fn is_signed_by_address<C: secp256k1::Verification>(
@@ -172,8 +172,8 @@ mod message_signing {
         use crate::prelude::String;
 
         impl MessageSignature {
-            /// Convert a signature from base64 encoding.
-            pub fn from_base64(s: &str) -> Result<MessageSignature, MessageSignatureError> {
+            /// Converts a signature from base64 encoding.
+            pub fn from_base64(s: &str) -> Result<Self, MessageSignatureError> {
                 if s.len() != 88 {
                     return Err(MessageSignatureError::InvalidLength);
                 }
@@ -181,10 +181,10 @@ mod message_signing {
                 BASE64_STANDARD
                     .decode_slice_unchecked(s, &mut byte_array)
                     .map_err(|_| MessageSignatureError::InvalidBase64)?;
-                MessageSignature::from_byte_array(&byte_array).map_err(MessageSignatureError::from)
+                Self::from_byte_array(&byte_array).map_err(MessageSignatureError::from)
             }
 
-            /// Convert to base64 encoding.
+            /// Converts to base64 encoding.
             pub fn to_base64(self) -> String { BASE64_STANDARD.encode(self.serialize()) }
         }
 
@@ -198,8 +198,8 @@ mod message_signing {
 
         impl core::str::FromStr for MessageSignature {
             type Err = MessageSignatureError;
-            fn from_str(s: &str) -> Result<MessageSignature, MessageSignatureError> {
-                MessageSignature::from_base64(s)
+            fn from_str(s: &str) -> Result<Self, MessageSignatureError> {
+                Self::from_base64(s)
             }
         }
     }

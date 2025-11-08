@@ -2,27 +2,13 @@
 
 //! Bitcoin Merkle tree functions.
 
-#[cfg(feature = "arbitrary")]
-use arbitrary::{Arbitrary, Unstructured};
-use hashes::sha256d;
+// This module is unusual in that it exists because of a bunch of (krufty) reasons:
+//
+// - We based the name off of the original `bitcoin` module.
+// - We want the API to be the same here as in `bitcoin`.
+// - We define all the other hash types in some module so the merkle tree hash types need a module.
+//
+// C'est la vie.
 
-hashes::hash_newtype! {
-    /// A hash of the Merkle tree branch or root for transactions.
-    pub struct TxMerkleNode(sha256d::Hash);
-    /// A hash corresponding to the Merkle tree root for witness data.
-    pub struct WitnessMerkleNode(sha256d::Hash);
-}
-
-#[cfg(feature = "hex")]
-hashes::impl_hex_for_newtype!(TxMerkleNode, WitnessMerkleNode);
-#[cfg(not(feature = "hex"))]
-hashes::impl_debug_only_for_newtype!(TxMerkleNode, WitnessMerkleNode);
-#[cfg(feature = "serde")]
-hashes::impl_serde_for_newtype!(TxMerkleNode, WitnessMerkleNode);
-
-#[cfg(feature = "arbitrary")]
-impl<'a> Arbitrary<'a> for TxMerkleNode {
-    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(TxMerkleNode::from_byte_array(u.arbitrary()?))
-    }
-}
+#[doc(inline)]
+pub use crate::hash_types::{TxMerkleNode, TxMerkleNodeEncoder, WitnessMerkleNode};

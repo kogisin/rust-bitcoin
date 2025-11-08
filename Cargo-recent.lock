@@ -19,8 +19,8 @@ name = "base58ck"
 version = "0.2.0"
 dependencies = [
  "bitcoin-internals",
- "bitcoin_hashes 0.16.0",
- "hex-conservative 0.3.0",
+ "bitcoin_hashes 0.17.0",
+ "hex_lit",
 ]
 
 [[package]]
@@ -57,7 +57,7 @@ dependencies = [
  "bitcoin-io 0.2.0",
  "bitcoin-primitives",
  "bitcoin-units",
- "bitcoin_hashes 0.16.0",
+ "bitcoin_hashes 0.17.0",
  "bitcoinconsensus",
  "hex-conservative 0.3.0",
  "hex_lit",
@@ -72,11 +72,19 @@ name = "bitcoin-addresses"
 version = "0.0.0"
 
 [[package]]
+name = "bitcoin-consensus-encoding"
+version = "1.0.0-rc.1"
+dependencies = [
+ "bitcoin-internals",
+]
+
+[[package]]
 name = "bitcoin-fuzz"
 version = "0.0.1"
 dependencies = [
  "arbitrary",
  "bitcoin",
+ "bitcoin-consensus-encoding",
  "bitcoin-p2p-messages",
  "honggfuzz",
  "serde",
@@ -85,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "bitcoin-internals"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bincode",
  "hex-conservative 0.3.0",
@@ -103,44 +111,50 @@ checksum = "0b47c4ab7a93edb0c7198c5535ed9b52b63095f4e9b45279c6736cec4b856baf"
 name = "bitcoin-io"
 version = "0.2.0"
 dependencies = [
+ "bitcoin-consensus-encoding",
  "bitcoin-internals",
- "bitcoin_hashes 0.16.0",
+ "bitcoin_hashes 0.17.0",
 ]
 
 [[package]]
 name = "bitcoin-p2p-messages"
 version = "0.1.0"
 dependencies = [
+ "arbitrary",
  "bitcoin",
  "bitcoin-internals",
  "bitcoin-io 0.2.0",
  "bitcoin-units",
- "bitcoin_hashes 0.16.0",
+ "bitcoin_hashes 0.17.0",
  "hex-conservative 0.3.0",
  "hex_lit",
 ]
 
 [[package]]
 name = "bitcoin-primitives"
-version = "0.101.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "arbitrary",
  "arrayvec",
  "bincode",
+ "bitcoin-consensus-encoding",
  "bitcoin-internals",
  "bitcoin-units",
- "bitcoin_hashes 0.16.0",
+ "bitcoin_hashes 0.17.0",
  "hex-conservative 0.3.0",
+ "hex-conservative 1.0.0",
+ "hex_lit",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "bitcoin-units"
-version = "1.0.0-rc.0"
+version = "1.0.0-rc.2"
 dependencies = [
  "arbitrary",
  "bincode",
+ "bitcoin-consensus-encoding",
  "bitcoin-internals",
  "serde",
  "serde_json",
@@ -159,8 +173,9 @@ dependencies = [
 
 [[package]]
 name = "bitcoin_hashes"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
+ "bitcoin-consensus-encoding",
  "bitcoin-internals",
  "hex-conservative 0.3.0",
  "serde",
@@ -231,8 +246,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4afe881d0527571892c4034822e59bb10c6c991cce6abe8199b6f5cf10766f55"
 dependencies = [
  "arrayvec",
- "serde",
 ]
+
+[[package]]
+name = "hex-conservative"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ee770c000993d17c185713463d5ebfbd1af9afae4c17cc295640104383bfbf0"
 
 [[package]]
 name = "hex_lit"
@@ -242,13 +262,14 @@ checksum = "3011d1213f159867b13cfd6ac92d2cd5f1345762c63be3554e84092d85a50bbd"
 
 [[package]]
 name = "honggfuzz"
-version = "0.5.56"
+version = "0.5.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c76b6234c13c9ea73946d1379d33186151148e0da231506b964b44f3d023505"
+checksum = "6e8319f3cc8fe416e7aa1ab95dcc04fd49f35397a47d0b2f0f225f6dba346a07"
 dependencies = [
  "lazy_static",
  "memmap2",
  "rustc_version",
+ "semver",
 ]
 
 [[package]]

@@ -2,24 +2,24 @@
 
 //! Test the API surface of `units`.
 //!
-//! The point of these tests are to check the API surface as opposed to test the API functionality.
+//! The point of these tests is to check the API surface as opposed to test the API functionality.
 //!
 //! ref: <https://rust-lang.github.io/api-guidelines/about.html>
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
 // Exclude lints we don't think are valuable.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
 // Import using module style e.g., `sha256::Hash`.
 use bitcoin_hashes::{
     hash160, hash_newtype, hkdf, hmac, ripemd160, sha1, sha256, sha256d, sha256t, sha256t_tag,
-    sha384, sha512, sha512_256, siphash24, FromSliceError, Hash, HashEngine,
+    sha384, sha3_256, sha512, sha512_256, siphash24, FromSliceError, Hash, HashEngine,
 };
 // Import using type alias style e.g., `Sha256`.
 use bitcoin_hashes::{
-    Hash160, Hkdf, Hmac, HmacEngine, Ripemd160, Sha1, Sha256, Sha256d, Sha256t, Sha384, Sha512,
-    Sha512_256, Siphash24,
+    Hash160, Hkdf, Hmac, HmacEngine, Ripemd160, Sha1, Sha256, Sha256d, Sha256t, Sha384, Sha3_256,
+    Sha512, Sha512_256, Siphash24,
 };
 
 // Arbitrary midstate value; taken from as sha256t unit tests.
@@ -56,6 +56,7 @@ struct Hashes<T: Hash> {
     j: sha512::Hash,
     k: sha512_256::Hash,
     l: siphash24::Hash,
+    m: sha3_256::Hash,
 }
 
 impl Hashes<Sha256> {
@@ -65,7 +66,7 @@ impl Hashes<Sha256> {
         let tagged = TaggedHash::from_byte_array(Sha256t::<Tag>::hash(&[]).to_byte_array());
         let siphash = Siphash24::from_engine(siphash24::HashEngine::with_keys(0, 0));
 
-        Hashes {
+        Self {
             a: Hash160::hash(&[]),
             // b: hkdf,
             c: hmac,
@@ -78,6 +79,7 @@ impl Hashes<Sha256> {
             j: Sha512::hash(&[]),
             k: Sha512_256::hash(&[]),
             l: siphash,
+            m: Sha3_256::hash(&[]),
         }
     }
 }
@@ -98,11 +100,12 @@ struct Engines {
     i: sha512::HashEngine,
     j: sha512_256::HashEngine,
     k: siphash24::HashEngine,
+    l: sha3_256::HashEngine,
 }
 
 impl Engines {
     fn new_sha256() -> Self {
-        Engines {
+        Self {
             a: hash160::HashEngine::new(),
             b: hmac::HmacEngine::<sha256::HashEngine>::new(&[]),
             c: ripemd160::HashEngine::new(),
@@ -114,6 +117,7 @@ impl Engines {
             i: sha512::HashEngine::new(),
             j: sha512_256::HashEngine::new(),
             k: siphash24::HashEngine::with_keys(0, 0),
+            l: sha3_256::HashEngine::new(),
         }
     }
 }
@@ -148,6 +152,7 @@ struct Default {
     g: sha384::HashEngine,
     h: sha512::HashEngine,
     i: sha512_256::HashEngine,
+    j: sha3_256::HashEngine,
 }
 
 /// Hash types that require a key.

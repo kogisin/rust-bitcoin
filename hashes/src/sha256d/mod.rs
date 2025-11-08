@@ -18,7 +18,7 @@ impl Hash {
 
         let mut ret = [0; 32];
         ret.copy_from_slice(sha2d.as_byte_array());
-        Hash(ret)
+        Self(ret)
     }
 }
 
@@ -135,42 +135,5 @@ mod tests {
             &hash.readable(),
             &[Token::Str("6cfb35868c4465b7c289d7d5641563aa973db6a929655282a7bf95c8257f53ef")],
         );
-    }
-}
-
-#[cfg(bench)]
-mod benches {
-    use test::Bencher;
-
-    use crate::{sha256d, Hash, HashEngine};
-
-    #[bench]
-    pub fn sha256d_10(bh: &mut Bencher) {
-        let mut engine = sha256d::Hash::engine();
-        let bytes = [1u8; 10];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn sha256d_1k(bh: &mut Bencher) {
-        let mut engine = sha256d::Hash::engine();
-        let bytes = [1u8; 1024];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn sha256d_64k(bh: &mut Bencher) {
-        let mut engine = sha256d::Hash::engine();
-        let bytes = [1u8; 65536];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
     }
 }

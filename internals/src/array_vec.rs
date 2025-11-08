@@ -12,8 +12,6 @@ pub use safety_boundary::ArrayVec;
 mod safety_boundary {
     use core::mem::MaybeUninit;
 
-    use crate::const_tools::cond_const;
-
     /// A growable contiguous collection backed by array.
     #[derive(Copy)]
     pub struct ArrayVec<T: Copy, const CAP: usize> {
@@ -43,18 +41,21 @@ mod safety_boundary {
             Self { len: slice.len(), data }
         }
 
-        // from_raw_parts is const-unstable until 1.64
-        cond_const! {
-            /// Returns a reference to the underlying data.
-            pub const(in 1.64) fn as_slice(&self) -> &[T] {
-                let ptr = &self.data as *const _ as *const T;
-                unsafe { core::slice::from_raw_parts(ptr, self.len) }
-            }
+        /// Returns a reference to the underlying data.
+        pub const fn as_slice(&self) -> &[T] {
+            // transmute needed; see https://github.com/rust-lang/rust/issues/63569
+            // SAFETY: self.len is chosen such that everything is initialized up to len,
+            //  and MaybeUninit<T> has the same representation as T.
+            let ptr = self.data.as_ptr().cast::<T>();
+            unsafe { core::slice::from_raw_parts(ptr, self.len) }
         }
 
         /// Returns a mutable reference to the underlying data.
         pub fn as_mut_slice(&mut self) -> &mut [T] {
-            unsafe { &mut *(&mut self.data[..self.len] as *mut _ as *mut [T]) }
+            // SAFETY: self.len is chosen such that everything is initialized up to len,
+            //  and MaybeUninit<T> has the same representation as T.
+            let ptr = self.data.as_mut_ptr().cast::<T>();
+            unsafe { core::slice::from_raw_parts_mut(ptr, self.len) }
         }
 
         /// Adds an element into `self`.
@@ -77,7 +78,10 @@ mod safety_boundary {
             let new_len = self.len.checked_add(slice.len()).expect("integer/buffer overflow");
             assert!(new_len <= CAP, "buffer overflow");
             // SAFETY: MaybeUninit<T> has the same layout as T
-            let slice = unsafe { &*(slice as *const _ as *const [MaybeUninit<T>]) };
+            let slice = unsafe {
+                let ptr = slice.as_ptr();
+                core::slice::from_raw_parts(ptr.cast::<MaybeUninit<T>>(), slice.len())
+            };
             self.data[self.len..new_len].copy_from_slice(slice);
             self.len = new_len;
         }
@@ -136,7 +140,7 @@ impl<T: Copy + PartialEq, const CAP: usize, const LEN: usize> PartialEq<ArrayVec
 }
 
 impl<T: Copy + Ord, const CAP: usize> Ord for ArrayVec<T, CAP> {
-    fn cmp(&self, other: &ArrayVec<T, CAP>) -> core::cmp::Ordering { (**self).cmp(&**other) }
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering { (**self).cmp(&**other) }
 }
 
 impl<T: Copy + PartialOrd, const CAP1: usize, const CAP2: usize> PartialOrd<ArrayVec<T, CAP2>>

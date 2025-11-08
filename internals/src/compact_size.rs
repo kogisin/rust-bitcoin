@@ -18,7 +18,7 @@ use crate::ToU64;
 pub const MAX_ENCODABLE_VALUE: u64 = 0x0200_0000;
 
 /// The maximum length of an encoding.
-const MAX_ENCODING_SIZE: usize = 9;
+pub const MAX_ENCODING_SIZE: usize = 9;
 
 /// Returns the number of bytes used to encode this `CompactSize` value.
 ///
@@ -69,9 +69,8 @@ pub fn encode(value: impl ToU64) -> ArrayVec<u8, MAX_ENCODING_SIZE> {
             res.extend_from_slice(&v.to_le_bytes());
         }
         _ => {
-            let v = value;
             res.push(0xFF);
-            res.extend_from_slice(&v.to_le_bytes());
+            res.extend_from_slice(&value.to_le_bytes());
         }
     }
     res
@@ -219,8 +218,10 @@ mod tests {
     check_decode! {
         // 3 byte encoding.
         decode_from_3_byte_slice_lower_bound, 3, 0xFD, [0xFD, 0xFD, 0x00];
+        decode_from_3_byte_slice_three_over_lower_bound, 3, 0x0100, [0xFD, 0x00, 0x01];
         decode_from_3_byte_slice_endianness, 3, 0xABCD, [0xFD, 0xCD, 0xAB];
         decode_from_3_byte_slice_upper_bound, 3, 0xFFFF, [0xFD, 0xFF, 0xFF];
+
         // 5 byte encoding.
         decode_from_5_byte_slice_lower_bound, 5, 0x0001_0000, [0xFE, 0x00, 0x00, 0x01, 0x00];
         decode_from_5_byte_slice_endianness, 5, 0x0123_4567, [0xFE, 0x67, 0x45, 0x23, 0x01];

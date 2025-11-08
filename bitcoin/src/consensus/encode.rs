@@ -14,7 +14,8 @@
 //! scripts come with an opcode decode, hashes are big-endian, numbers are
 //! typically big-endian decimals, etc.)
 
-use core::mem;
+use core::any::TypeId;
+use core::{cmp, mem, slice};
 
 use hashes::{sha256, sha256d, Hash};
 use hex::DisplayHex as _;
@@ -22,13 +23,8 @@ use internals::{compact_size, ToU64};
 use io::{BufRead, Cursor, Read, Write};
 
 use super::IterReader;
-use crate::bip152::{PrefilledTransaction, ShortId};
-use crate::bip158::{FilterHash, FilterHeader};
-use crate::block::{self, BlockHash};
-use crate::merkle_tree::TxMerkleNode;
 use crate::prelude::{rc, sync, Box, Cow, String, Vec};
 use crate::taproot::TapLeafHash;
-use crate::transaction::{Transaction, TxIn, TxOut};
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 pub use super::{Error, FromHexError, ParseError, DeserializeError};
@@ -59,7 +55,7 @@ pub fn deserialize<T: Decodable>(data: &[u8]) -> Result<T, DeserializeError> {
     }
 }
 
-/// Deserialize any decodable type from a hex string, will error if said deserialization
+/// Deserializes any decodable type from a hex string, will error if said deserialization
 /// doesn't consume the entire vector.
 pub fn deserialize_hex<T: Decodable>(hex: &str) -> Result<T, FromHexError> {
     let iter = hex::HexSliceToBytesIter::new(hex)?;
@@ -225,7 +221,7 @@ impl<R: Read + ?Sized> ReadExt for R {
             0xFF => {
                 let x = self.read_u64()?;
                 if x < 0x1_0000_0000 { // I.e., would have fit in a `u32`.
-                    Err(ParseError::NonMinimalVarInt.into())
+                    Err(ParseError::NonMinimalCompactSize.into())
                 } else {
                     Ok(x)
                 }
@@ -233,7 +229,7 @@ impl<R: Read + ?Sized> ReadExt for R {
             0xFE => {
                 let x = self.read_u32()?;
                 if x < 0x1_0000 { // I.e., would have fit in a `u16`.
-                    Err(ParseError::NonMinimalVarInt.into())
+                    Err(ParseError::NonMinimalCompactSize.into())
                 } else {
                     Ok(x as u64)
                 }
@@ -241,7 +237,7 @@ impl<R: Read + ?Sized> ReadExt for R {
             0xFD => {
                 let x = self.read_u16()?;
                 if x < 0xFD {   // Could have been encoded as a `u8`.
-                    Err(ParseError::NonMinimalVarInt.into())
+                    Err(ParseError::NonMinimalCompactSize.into())
                 } else {
                     Ok(x as u64)
                 }
@@ -265,9 +261,9 @@ pub trait Encodable {
     fn consensus_encode<W: Write + ?Sized>(&self, writer: &mut W) -> Result<usize, io::Error>;
 }
 
-/// Data which can be encoded in a consensus-consistent way.
+/// Data which can be decoded in a consensus-consistent way.
 pub trait Decodable: Sized {
-    /// Decode `Self` from a size-limited reader.
+    /// Decodes `Self` from a size-limited reader.
     ///
     /// Like `consensus_decode` but relies on the reader being limited in the amount of data it
     /// returns, e.g. by being wrapped in [`std::io::Take`].
@@ -284,7 +280,7 @@ pub trait Decodable: Sized {
     /// * Simple types that have a fixed size (own and member fields), don't have to overwrite
     ///   this method, or be concern with it.
     /// * Types that deserialize using externally provided length should implement it:
-    ///   * Make `consensus_decode` forward to `consensus_decode_bytes_from_finite_reader` with the
+    ///   * Make `consensus_decode` forward to `consensus_decode_from_finite_reader` with the
     ///     reader wrapped by `Take`. Failure to do so, without other forms of memory exhaustion
     ///     protection might lead to resource exhaustion vulnerability.
     ///   * Put a max cap on things like `Vec::with_capacity` to avoid oversized allocations, and
@@ -305,7 +301,7 @@ pub trait Decodable: Sized {
         Self::consensus_decode(reader)
     }
 
-    /// Decode an object with a well-defined format.
+    /// Decodes an object with a well-defined format.
     ///
     /// This is the method that should be implemented for a typical, fixed sized type
     /// implementing this trait. Default implementation is wrapping the reader
@@ -317,30 +313,6 @@ pub trait Decodable: Sized {
     fn consensus_decode<R: BufRead + ?Sized>(reader: &mut R) -> Result<Self, Error> {
         Self::consensus_decode_from_finite_reader(&mut reader.take(MAX_VEC_SIZE.to_u64()))
     }
-}
-
-/// Data and a 4-byte checksum.
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct CheckedData {
-    data: Vec<u8>,
-    checksum: [u8; 4],
-}
-
-impl CheckedData {
-    /// Constructs a new `CheckedData` computing the checksum of given data.
-    pub fn new(data: Vec<u8>) -> Self {
-        let checksum = sha2_checksum(&data);
-        Self { data, checksum }
-    }
-
-    /// Returns a reference to the raw data without the checksum.
-    pub fn data(&self) -> &[u8] { &self.data }
-
-    /// Returns the raw data without the checksum.
-    pub fn into_data(self) -> Vec<u8> { self.data }
-
-    /// Returns the checksum of the data.
-    pub fn checksum(&self) -> [u8; 4] { self.checksum }
 }
 
 // Primitive types
@@ -401,7 +373,7 @@ impl Encodable for bool {
 
 impl Decodable for bool {
     #[inline]
-    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<bool, Error> {
+    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
         ReadExt::read_bool(r)
     }
 }
@@ -415,8 +387,8 @@ impl Encodable for String {
 
 impl Decodable for String {
     #[inline]
-    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<String, Error> {
-        String::from_utf8(Decodable::consensus_decode(r)?)
+    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
+        Self::from_utf8(Decodable::consensus_decode(r)?)
             .map_err(|_| super::parse_failed_error("String was not valid UTF8"))
     }
 }
@@ -430,7 +402,7 @@ impl Encodable for Cow<'static, str> {
 
 impl Decodable for Cow<'static, str> {
     #[inline]
-    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Cow<'static, str>, Error> {
+    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
         String::from_utf8(Decodable::consensus_decode(r)?)
             .map_err(|_| super::parse_failed_error("String was not valid UTF8"))
             .map(Cow::Owned)
@@ -494,58 +466,57 @@ impl Encodable for [u16; 8] {
     }
 }
 
-macro_rules! impl_vec {
-    ($type: ty) => {
-        impl Encodable for Vec<$type> {
-            #[inline]
-            fn consensus_encode<W: Write + ?Sized>(
-                &self,
-                w: &mut W,
-            ) -> core::result::Result<usize, io::Error> {
-                let mut len = 0;
-                len += w.emit_compact_size(self.len())?;
-                for c in self.iter() {
-                    len += c.consensus_encode(w)?;
-                }
-                Ok(len)
-            }
-        }
+impl<T: Encodable + 'static> Encodable for Vec<T> {
+    #[inline]
+    fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
+        if TypeId::of::<T>() == TypeId::of::<u8>() {
+            let len = self.len();
+            let ptr = self.as_ptr();
 
-        impl Decodable for Vec<$type> {
-            #[inline]
-            fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(
-                r: &mut R,
-            ) -> core::result::Result<Self, Error> {
-                let len = r.read_compact_size()?;
-                // Do not allocate upfront more items than if the sequence of type
-                // occupied roughly quarter a block. This should never be the case
-                // for normal data, but even if that's not true - `push` will just
-                // reallocate.
-                // Note: OOM protection relies on reader eventually running out of
-                // data to feed us.
-                let max_capacity = MAX_VEC_SIZE / 4 / mem::size_of::<$type>();
-                let mut ret = Vec::with_capacity(core::cmp::min(len as usize, max_capacity));
-                for _ in 0..len {
-                    ret.push(Decodable::consensus_decode_from_finite_reader(r)?);
-                }
-                Ok(ret)
+            // unsafe: We've just checked that T is `u8`.
+            let v = unsafe { slice::from_raw_parts(ptr.cast::<u8>(), len) };
+            consensus_encode_with_size(v, w)
+        } else {
+            let mut len = 0;
+            len += w.emit_compact_size(self.len())?;
+            for c in self.iter() {
+                len += c.consensus_encode(w)?;
             }
+            Ok(len)
         }
-    };
+    }
 }
-impl_vec!(BlockHash);
-impl_vec!(block::Header);
-impl_vec!(FilterHash);
-impl_vec!(FilterHeader);
-impl_vec!(TxMerkleNode);
-impl_vec!(Transaction);
-impl_vec!(TxOut);
-impl_vec!(TxIn);
-impl_vec!(Vec<u8>);
-impl_vec!(u64);
-impl_vec!(TapLeafHash);
-impl_vec!(ShortId);
-impl_vec!(PrefilledTransaction);
+
+impl<T: Decodable + 'static> Decodable for Vec<T> {
+    #[inline]
+    fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(
+        r: &mut R,
+    ) -> Result<Self, Error> {
+        if TypeId::of::<T>() == TypeId::of::<u8>() {
+            let len = r.read_compact_size()? as usize;
+            // most real-world vec of bytes data, wouldn't be larger than 128KiB
+            let opts = ReadBytesFromFiniteReaderOpts { len, chunk_size: 128 * 1024 };
+            let bytes = read_bytes_from_finite_reader(r, opts)?;
+
+            // unsafe: We've just checked that T is `u8` so the transmute here is a no-op.
+            unsafe { Ok(mem::transmute::<Vec<u8>, Self>(bytes)) }
+        } else {
+            let len = r.read_compact_size()?;
+            // Do not allocate upfront more items than if the sequence of type
+            // occupied roughly quarter a block. This should never be the case
+            // for normal data, but even if that's not true - `push` will just
+            // reallocate.
+            // Note: OOM protection relies on reader eventually running out of
+            // data to feed us.
+            let max_capacity = MAX_VEC_SIZE / 4 / mem::size_of::<T>();
+            let mut ret = Self::with_capacity(cmp::min(len as usize, max_capacity));
+            for _ in 0..len {
+                ret.push(Decodable::consensus_decode_from_finite_reader(r)?);
+            }
+            Ok(ret)
+        }
+    }
+}
 
 pub(crate) fn consensus_encode_with_size<W: Write + ?Sized>(
     data: &[u8],
@@ -584,23 +555,6 @@ fn read_bytes_from_finite_reader<D: Read + ?Sized>(
     Ok(ret)
 }
 
-impl Encodable for Vec<u8> {
-    #[inline]
-    fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
-        consensus_encode_with_size(self, w)
-    }
-}
-
-impl Decodable for Vec<u8> {
-    #[inline]
-    fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
-        let len = r.read_compact_size()? as usize;
-        // most real-world vec of bytes data, wouldn't be larger than 128KiB
-        let opts = ReadBytesFromFiniteReaderOpts { len, chunk_size: 128 * 1024 };
-        read_bytes_from_finite_reader(r, opts)
-    }
-}
-
 impl Encodable for Box<[u8]> {
     #[inline]
     fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
@@ -612,42 +566,6 @@ impl Decodable for Box<[u8]> {
     #[inline]
     fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
         <Vec<u8>>::consensus_decode_from_finite_reader(r).map(From::from)
-    }
-}
-
-/// Does a double-SHA256 on `data` and returns the first 4 bytes.
-fn sha2_checksum(data: &[u8]) -> [u8; 4] {
-    let checksum = sha256d::hash(data);
-    let checksum = checksum.to_byte_array();
-    [checksum[0], checksum[1], checksum[2], checksum[3]]
-}
-
-impl Encodable for CheckedData {
-    #[inline]
-    fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
-        u32::try_from(self.data.len())
-            .expect("network message use u32 as length")
-            .consensus_encode(w)?;
-        self.checksum().consensus_encode(w)?;
-        Ok(8 + w.emit_slice(&self.data)?)
-    }
-}
-
-impl Decodable for CheckedData {
-    #[inline]
-    fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
-        let len = u32::consensus_decode_from_finite_reader(r)? as usize;
-
-        let checksum = <[u8; 4]>::consensus_decode_from_finite_reader(r)?;
-        let opts = ReadBytesFromFiniteReaderOpts { len, chunk_size: MAX_VEC_SIZE };
-        let data = read_bytes_from_finite_reader(r, opts)?;
-        let expected_checksum = sha2_checksum(&data);
-        if expected_checksum != checksum {
-            Err(ParseError::InvalidChecksum { expected: expected_checksum, actual: checksum }
-                .into())
-        } else {
-            Ok(CheckedData { data, checksum })
-        }
     }
 }
 
@@ -753,6 +671,11 @@ mod tests {
     use core::mem::discriminant;
 
     use super::*;
+    use crate::bip158::FilterHash;
+    use crate::block::BlockHash;
+    use crate::merkle_tree::TxMerkleNode;
+    use crate::prelude::{Cow, Vec};
+    use crate::transaction::{Transaction, TxIn, TxOut};
 
     #[test]
     fn serialize_int() {
@@ -851,50 +774,50 @@ mod tests {
             discriminant(
                 &test_varint_encode(0xFF, &(0x100000000_u64 - 1).to_le_bytes()).unwrap_err()
             ),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(&test_varint_encode(0xFE, &(0x10000_u64 - 1).to_le_bytes()).unwrap_err()),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(&test_varint_encode(0xFD, &(0xFD_u64 - 1).to_le_bytes()).unwrap_err()),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
 
         assert_eq!(
             discriminant(&deserialize::<Vec<u8>>(&[0xfd, 0x00, 0x00]).unwrap_err()),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(&deserialize::<Vec<u8>>(&[0xfd, 0xfc, 0x00]).unwrap_err()),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(&deserialize::<Vec<u8>>(&[0xfd, 0xfc, 0x00]).unwrap_err()),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(&deserialize::<Vec<u8>>(&[0xfe, 0xff, 0x00, 0x00, 0x00]).unwrap_err()),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(&deserialize::<Vec<u8>>(&[0xfe, 0xff, 0xff, 0x00, 0x00]).unwrap_err()),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(
                 &deserialize::<Vec<u8>>(&[0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
                     .unwrap_err()
             ),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
         assert_eq!(
             discriminant(
                 &deserialize::<Vec<u8>>(&[0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00])
                     .unwrap_err()
             ),
-            discriminant(&ParseError::NonMinimalVarInt.into())
+            discriminant(&ParseError::NonMinimalCompactSize.into())
         );
 
         let mut vec_256 = vec![0; 259];
@@ -908,12 +831,6 @@ mod tests {
         vec_253[1] = 0xfd;
         vec_253[2] = 0x00;
         assert!(deserialize::<Vec<u8>>(&vec_253).is_ok());
-    }
-
-    #[test]
-    fn serialize_checkeddata() {
-        let cd = CheckedData::new(vec![1u8, 2, 3, 4, 5]);
-        assert_eq!(serialize(&cd), [5, 0, 0, 0, 162, 107, 175, 90, 1, 2, 3, 4, 5]);
     }
 
     #[test]
@@ -1022,8 +939,7 @@ mod tests {
 
         // Check serialization that `if len > MAX_VEC_SIZE {return err}` isn't inclusive,
         // by making sure it fails with `MissingData` and not an `OversizedVectorAllocation` Error.
-        let err =
-            deserialize::<CheckedData>(&serialize(&(super::MAX_VEC_SIZE as u32))).unwrap_err();
+        let err = deserialize::<BlockHash>(&serialize(&(super::MAX_VEC_SIZE as u32))).unwrap_err();
         assert_eq!(err, DeserializeError::Parse(ParseError::MissingData));
 
         test_len_is_max_vec::<u8>();
@@ -1058,13 +974,6 @@ mod tests {
             deserialize(&[6u8, 0x41, 0x6e, 0x64, 0x72, 0x65, 0x77]).ok(),
             Some(Cow::Borrowed("Andrew"))
         );
-    }
-
-    #[test]
-    fn deserialize_checkeddata() {
-        let cd: Result<CheckedData, _> =
-            deserialize(&[5u8, 0, 0, 0, 162, 107, 175, 90, 1, 2, 3, 4, 5]);
-        assert_eq!(cd.ok(), Some(CheckedData::new(vec![1u8, 2, 3, 4, 5])));
     }
 
     #[test]
@@ -1148,5 +1057,46 @@ mod tests {
             deserialize_hex::<Transaction>(&hex).unwrap_err(),
             FromHexError::Decode(DecodeError::Unconsumed)
         ));
+    }
+
+    #[test]
+    fn deserialize_extreme_tx() {
+        use crate::{ScriptSigBuf, Witness};
+
+        // Start with transaction from `deserialize_tx_hex`
+        let hex = include_str!("../../tests/data/previous_tx_0_hex"); // An arbitrary transaction.
+        let tx = deserialize_hex::<Transaction>(hex).unwrap();
+
+        assert_eq!(tx.inputs.len(), 1);
+        assert_eq!(tx.outputs.len(), 2);
+        assert_eq!(tx.inputs[0].witness.len(), 2);
+
+        // 1. Test with 4 million witnesses.
+        let mut tx_copy = tx.clone();
+        tx_copy.inputs[0].witness = Witness::from_slice(&vec![vec![]; 4_000_000]);
+        let roundtrip = deserialize(&serialize(&tx_copy)).unwrap();
+        assert_eq!(tx_copy, roundtrip);
+
+        // 2. Test with a single large witness. (Size of 4 megs, including length prefix)
+        let mut tx_copy = tx.clone();
+        tx_copy.inputs[0].witness = Witness::from_slice(&vec![vec![0; 4_000_000 - 9]; 1]);
+        let roundtrip = deserialize(&serialize(&tx_copy)).unwrap();
+        assert_eq!(tx_copy, roundtrip);
+
+        // 3. Combine these; with the witness stack we can exceed a total size of 4M but
+        //    only by a tiny bit. (It is not part of our API guarantee that such things
+        //    will round-trip, but we unit test them anyway to help notice changes.)
+        let mut tx_copy = tx.clone();
+        tx_copy.inputs[0].witness = Witness::from_slice(&vec![vec![0; 997]; 4_000]);
+        let roundtrip = deserialize(&serialize(&tx_copy)).unwrap();
+        assert_eq!(tx_copy, roundtrip);
+
+        // 4. Test with a large script sig. With scriptsigs there is no limit on how large
+        //    an object we can parse, which is inconsistent with witnesses. Also not an
+        //    API guarantee.
+        let mut tx_copy = tx.clone();
+        tx_copy.inputs[0].script_sig = ScriptSigBuf::from(vec![0; 8_000_001]);
+        let roundtrip = deserialize(&serialize(&tx_copy)).unwrap();
+        assert_eq!(tx_copy, roundtrip);
     }
 }

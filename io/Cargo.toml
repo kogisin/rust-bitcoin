@@ -10,16 +10,17 @@ categories = ["no-std"]
 keywords = [ "io", "no-std" ]
 readme = "README.md"
 edition = "2021"
-rust-version = "1.63.0"
+rust-version = "1.74.0"
 exclude = ["tests", "contrib"]
 
 [features]
 default = ["std"]
-std = ["alloc", "hashes?/std"]
-alloc = ["hashes?/alloc"]
+std = ["alloc", "hashes?/std", "internals/std"]
+alloc = ["hashes?/alloc", "internals/alloc"]
 
 [dependencies]
 internals = { package = "bitcoin-internals", path = "../internals" }
+encoding = { package = "bitcoin-consensus-encoding", path = "../consensus_encoding", version = "1.0.0-rc.1", default-features = false }
 
 hashes = { package = "bitcoin_hashes", path = "../hashes", default-features = false, optional = true }
 
@@ -32,3 +33,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
 unexpected_cfgs = { level = "deny" }
+
+[lints.clippy]
+use_self = "warn"

@@ -5,7 +5,7 @@
 //! This module mainly introduces the [`Amount`] and [`SignedAmount`] types.
 //! We refer to the documentation on the types for more information.
 
-mod error;
+pub mod error;
 mod result;
 #[cfg(feature = "serde")]
 pub mod serde;
@@ -25,19 +25,26 @@ use core::str::FromStr;
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
 
-use self::error::{MissingDigitsKind, ParseAmountErrorInner, ParseErrorInner};
+use self::error::{
+    InputTooLargeError, InvalidCharacterError, MissingDenominationError, MissingDigitsError,
+    MissingDigitsKind, ParseAmountErrorInner, ParseErrorInner, PossiblyConfusingDenominationError,
+    TooPreciseError, UnknownDenominationError,
+};
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(inline)]
 pub use self::{
-    error::{
-        InputTooLargeError, InvalidCharacterError, MissingDenominationError, MissingDigitsError,
-        OutOfRangeError, ParseAmountError, ParseDenominationError, ParseError,
-        PossiblyConfusingDenominationError, TooPreciseError, UnknownDenominationError,
-    },
     signed::SignedAmount,
     unsigned::Amount,
 };
+#[cfg(feature = "encoding")]
+#[doc(no_inline)]
+pub use self::error::AmountDecoderError;
+#[doc(no_inline)]
+pub use self::error::{OutOfRangeError, ParseAmountError, ParseDenominationError, ParseError};
+#[doc(inline)]
+#[cfg(feature = "encoding")]
+pub use self::unsigned::{AmountDecoder, AmountEncoder};
 
 /// A set of denominations in which amounts can be expressed.
 ///
@@ -99,53 +106,53 @@ pub enum Denomination {
 
 impl Denomination {
     /// Convenience alias for `Denomination::Bitcoin`.
-    pub const BTC: Self = Denomination::Bitcoin;
+    pub const BTC: Self = Self::Bitcoin;
 
     /// Convenience alias for `Denomination::Satoshi`.
-    pub const SAT: Self = Denomination::Satoshi;
+    pub const SAT: Self = Self::Satoshi;
 
     /// The number of decimal places more than a satoshi.
     fn precision(self) -> i8 {
         match self {
-            Denomination::Bitcoin => -8,
-            Denomination::CentiBitcoin => -6,
-            Denomination::MilliBitcoin => -5,
-            Denomination::MicroBitcoin => -2,
-            Denomination::Bit => -2,
-            Denomination::Satoshi => 0,
-            Denomination::_DoNotUse(infallible) => match infallible {},
+            Self::Bitcoin => -8,
+            Self::CentiBitcoin => -6,
+            Self::MilliBitcoin => -5,
+            Self::MicroBitcoin => -2,
+            Self::Bit => -2,
+            Self::Satoshi => 0,
+            Self::_DoNotUse(infallible) => match infallible {},
         }
     }
 
     /// Returns a string representation of this denomination.
     fn as_str(self) -> &'static str {
         match self {
-            Denomination::Bitcoin => "BTC",
-            Denomination::CentiBitcoin => "cBTC",
-            Denomination::MilliBitcoin => "mBTC",
-            Denomination::MicroBitcoin => "uBTC",
-            Denomination::Bit => "bits",
-            Denomination::Satoshi => "satoshi",
-            Denomination::_DoNotUse(infallible) => match infallible {},
+            Self::Bitcoin => "BTC",
+            Self::CentiBitcoin => "cBTC",
+            Self::MilliBitcoin => "mBTC",
+            Self::MicroBitcoin => "uBTC",
+            Self::Bit => "bits",
+            Self::Satoshi => "satoshi",
+            Self::_DoNotUse(infallible) => match infallible {},
         }
     }
 
     /// The different `str` forms of denominations that are recognized.
     fn forms(s: &str) -> Option<Self> {
         match s {
-            "BTC" | "btc" => Some(Denomination::Bitcoin),
-            "cBTC" | "cbtc" => Some(Denomination::CentiBitcoin),
-            "mBTC" | "mbtc" => Some(Denomination::MilliBitcoin),
-            "uBTC" | "ubtc" | "µBTC" | "µbtc" => Some(Denomination::MicroBitcoin),
-            "bit" | "bits" | "BIT" | "BITS" => Some(Denomination::Bit),
+            "BTC" | "btc" => Some(Self::Bitcoin),
+            "cBTC" | "cbtc" => Some(Self::CentiBitcoin),
+            "mBTC" | "mbtc" => Some(Self::MilliBitcoin),
+            "uBTC" | "ubtc" | "µBTC" | "µbtc" => Some(Self::MicroBitcoin),
+            "bit" | "bits" | "BIT" | "BITS" => Some(Self::Bit),
             "SATOSHI" | "satoshi" | "SATOSHIS" | "satoshis" | "SAT" | "sat" | "SATS" | "sats" =>
-                Some(Denomination::Satoshi),
+                Some(Self::Satoshi),
             _ => None,
         }
     }
 }
 
-/// These form are ambiguous and could have many meanings.  For example, M could denote Mega or Milli.
+/// These forms are ambiguous and could have many meanings.  For example, M could denote Mega or Milli.
 /// If any of these forms are used, an error type `PossiblyConfusingDenomination` is returned.
 const CONFUSING_FORMS: [&str; 6] = ["CBTC", "Cbtc", "MBTC", "Mbtc", "UBTC", "Ubtc"];
 
@@ -170,7 +177,7 @@ impl FromStr for Denomination {
             return Err(E::PossiblyConfusing(PossiblyConfusingDenominationError(s.into())));
         };
 
-        let form = self::Denomination::forms(s);
+        let form = Self::forms(s);
 
         form.ok_or_else(|| E::Unknown(UnknownDenominationError(s.into())))
     }
@@ -362,7 +369,7 @@ struct FormatOptions {
 
 impl FormatOptions {
     fn from_formatter(f: &fmt::Formatter) -> Self {
-        FormatOptions {
+        Self {
             fill: f.fill(),
             align: f.align(),
             width: f.width(),
@@ -375,7 +382,7 @@ impl FormatOptions {
 
 impl Default for FormatOptions {
     fn default() -> Self {
-        FormatOptions {
+        Self {
             fill: ' ',
             align: None,
             width: None,
@@ -405,7 +412,7 @@ fn repeat_char(f: &mut dyn fmt::Write, c: char, count: usize) -> fmt::Result {
     Ok(())
 }
 
-/// Format the given satoshi amount in the given denomination.
+/// Formats the given satoshi amount in the given denomination.
 fn fmt_satoshi_in(
     mut satoshi: u64,
     negative: bool,
@@ -492,7 +499,7 @@ fn fmt_satoshi_in(
         (true, false, fmt::Alignment::Left) => (0, width - num_width),
         // If the required padding is odd it needs to be skewed to the left
         (true, false, fmt::Alignment::Center) =>
-            ((width - num_width) / 2, (width - num_width + 1) / 2),
+            ((width - num_width) / 2, (width - num_width).div_ceil(2)),
     };
 
     if !options.sign_aware_zero_pad {
@@ -598,12 +605,12 @@ impl<'a> Arbitrary<'a> for Denomination {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let choice = u.int_in_range(0..=5)?;
         match choice {
-            0 => Ok(Denomination::Bitcoin),
-            1 => Ok(Denomination::CentiBitcoin),
-            2 => Ok(Denomination::MilliBitcoin),
-            3 => Ok(Denomination::MicroBitcoin),
-            4 => Ok(Denomination::Bit),
-            _ => Ok(Denomination::Satoshi),
+            0 => Ok(Self::Bitcoin),
+            1 => Ok(Self::CentiBitcoin),
+            2 => Ok(Self::MilliBitcoin),
+            3 => Ok(Self::MicroBitcoin),
+            4 => Ok(Self::Bit),
+            _ => Ok(Self::Satoshi),
         }
     }
 }

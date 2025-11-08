@@ -12,7 +12,7 @@
     <a href="https://github.com/rust-bitcoin/rust-bitcoin/blob/master/LICENSE"><img alt="CC0 1.0 Universal Licensed" src="https://img.shields.io/badge/license-CC0--1.0-blue.svg"/></a>
     <a href="https://github.com/rust-bitcoin/rust-bitcoin/actions?query=workflow%3AContinuous%20integration"><img alt="CI Status" src="https://github.com/rust-bitcoin/rust-bitcoin/workflows/Continuous%20integration/badge.svg"></a>
     <a href="https://docs.rs/bitcoin"><img alt="API Docs" src="https://img.shields.io/badge/docs.rs-bitcoin-green"/></a>
-    <a href="https://blog.rust-lang.org/2022/08/11/Rust-1.63.0.html"><img alt="Rustc Version 1.63.0+" src="https://img.shields.io/badge/rustc-1.63.0%2B-lightgrey.svg"/></a>
+    <a href="https://blog.rust-lang.org/2023/11/16/Rust-1.74.0/"><img alt="Rustc Version 1.74.0+" src="https://img.shields.io/badge/rustc-1.74.0%2B-lightgrey.svg"/></a>
     <a href="https://gnusha.org/bitcoin-rust/"><img alt="Chat on IRC" src="https://img.shields.io/badge/irc-%23bitcoin--rust%20on%20libera.chat-blue"></a>
     <a href="https://github.com/model-checking/kani"><img alt="kani" src="https://github.com/rust-bitcoin/rust-bitcoin/workflows/Kani%20CI/badge.svg"></a>
   </p>
@@ -25,7 +25,7 @@ Supports (or should support)
 * De/serialization of Bitcoin protocol network messages
 * De/serialization of blocks and transactions
 * Script de/serialization
-* Private keys and address creation, de/serialization and validation (including full BIP32 support)
+* Private keys and address creation, de/serialization and validation (including full BIP-0032 support)
 * PSBT v0 de/serialization and all but the Input Finalizer role. Use [rust-miniscript](https://docs.rs/miniscript/latest/miniscript/psbt/index.html) to finalize.
 
 For JSONRPC interaction with Bitcoin Core, it is recommended to use
@@ -76,7 +76,7 @@ For more information, please see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## Minimum Supported Rust Version (MSRV)
 
-This library should compile with any combination of features on **Rust 1.63.0**.
+This library should compile with any combination of features on **Rust 1.74.0**.
 
 Use `Cargo-minimal.lock` to build the MSRV by copying to `Cargo.lock` and building.
 
@@ -185,7 +185,7 @@ for review yet please mark it by prefixing the title with `WIP: `.
 
 ### CI Pipeline
 
-The CI pipeline requires approval before being run on each MR.
+The CI pipeline requires approval before being run on each PR.
 
 In order to speed up the review process the CI pipeline can be run locally using
 [act](https://github.com/nektos/act). The `fuzz` and `Cross` jobs will be skipped when using `act`

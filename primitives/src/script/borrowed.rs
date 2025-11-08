@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
+use core::marker::PhantomData;
 use core::ops::{
     Bound, Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
 };
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+use encoding::{BytesEncoder, CompactSizeEncoder, Encodable, Encoder2};
 
 use super::ScriptBuf;
 use crate::prelude::{Box, ToOwned, Vec};
@@ -62,9 +64,9 @@ internals::transparent_newtype! {
     /// * [CScript definition](https://github.com/bitcoin/bitcoin/blob/d492dc1cdaabdc52b0766bf4cba4bd73178325d0/src/script/script.h#L410)
     ///
     #[derive(PartialOrd, Ord, PartialEq, Eq, Hash)]
-    pub struct Script([u8]);
+    pub struct Script<T>(PhantomData<T>, [u8]);
 
-    impl Script {
+    impl<T> Script<T> {
         /// Treat byte slice as `Script`
         pub const fn from_bytes(bytes: &_) -> &Self;
 
@@ -77,19 +79,19 @@ internals::transparent_newtype! {
     }
 }
 
-impl Default for &Script {
+impl<T: 'static> Default for &Script<T> {
     #[inline]
     fn default() -> Self { Script::new() }
 }
 
-impl ToOwned for Script {
-    type Owned = ScriptBuf;
+impl<T> ToOwned for Script<T> {
+    type Owned = ScriptBuf<T>;
 
     #[inline]
     fn to_owned(&self) -> Self::Owned { ScriptBuf::from_bytes(self.to_vec()) }
 }
 
-impl Script {
+impl<T> Script<T> {
     /// Constructs a new empty script.
     #[inline]
     pub const fn new() -> &'static Self { Self::from_bytes(&[]) }
@@ -98,13 +100,13 @@ impl Script {
     ///
     /// This is just the script bytes **not** consensus encoding (which includes a length prefix).
     #[inline]
-    pub const fn as_bytes(&self) -> &[u8] { &self.0 }
+    pub const fn as_bytes(&self) -> &[u8] { &self.1 }
 
     /// Returns the script data as a mutable byte slice.
     ///
     /// This is just the script bytes **not** consensus encoding (which includes a length prefix).
     #[inline]
-    pub fn as_mut_bytes(&mut self) -> &mut [u8] { &mut self.0 }
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] { &mut self.1 }
 
     /// Returns a copy of the script data.
     ///
@@ -128,7 +130,7 @@ impl Script {
     /// Converts a [`Box<Script>`](Box) into a [`ScriptBuf`] without copying or allocating.
     #[must_use]
     #[inline]
-    pub fn into_script_buf(self: Box<Self>) -> ScriptBuf {
+    pub fn into_script_buf(self: Box<Self>) -> ScriptBuf<T> {
         let rw = Box::into_raw(self) as *mut [u8];
         // SAFETY: copied from `std`
         // The pointer was just created from a box without deallocating
@@ -151,8 +153,27 @@ impl Script {
     pub fn to_hex(&self) -> alloc::string::String { alloc::format!("{:x}", self) }
 }
 
+encoding::encoder_newtype! {
+    /// The encoder for the [`Script<T>`] type.
+    pub struct ScriptEncoder<'e>(Encoder2<CompactSizeEncoder, BytesEncoder<'e>>);
+}
+
+impl<T> Encodable for Script<T> {
+    type Encoder<'a>
+        = ScriptEncoder<'a>
+    where
+        Self: 'a;
+
+    fn encoder(&self) -> Self::Encoder<'_> {
+        ScriptEncoder(Encoder2::new(
+            CompactSizeEncoder::new(self.as_bytes().len()),
+            BytesEncoder::without_length_prefix(self.as_bytes()),
+        ))
+    }
+}
+
 #[cfg(feature = "arbitrary")]
-impl<'a> Arbitrary<'a> for &'a Script {
+impl<'a, T> Arbitrary<'a> for &'a Script<T> {
     #[inline]
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let v = <&'a [u8]>::arbitrary(u)?;
@@ -164,7 +185,7 @@ macro_rules! delegate_index {
     ($($type:ty),* $(,)?) => {
         $(
             /// Script subslicing operation - read [slicing safety](#slicing-safety)!
-            impl Index<$type> for Script {
+            impl<T> Index<$type> for Script<T> {
                 type Output = Self;
 
                 #[inline]
@@ -188,7 +209,11 @@ delegate_index!(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // All tests should compile and pass no matter which script type you put here.
+    type Script = super::super::ScriptSig;
+
+    #[cfg(feature = "alloc")]
+    use alloc::{borrow::ToOwned, vec};
 
     #[test]
     fn script_from_bytes() {
@@ -242,5 +267,19 @@ mod tests {
         assert_eq!(script[..].as_bytes(), &[1, 2, 3, 4, 5]);
         assert_eq!(script[1..=3].as_bytes(), &[2, 3, 4]);
         assert_eq!(script[..=2].as_bytes(), &[1, 2, 3]);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn encode() {
+        // Consensus encoding includes the length of the encoded data
+        // (compact size encoded length prefix).
+        let consensus_encoded: [u8; 6] = [0x05, 1, 2, 3, 4, 5];
+
+        // `from_bytes` does not expect the prefix.
+        let script = Script::from_bytes(&consensus_encoded[1..]);
+
+        let got = encoding::encode_to_vec(script);
+        assert_eq!(got, consensus_encoded);
     }
 }

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //!
-//! BIP152  Compact Blocks network messages
+//! BIP-0152  Compact Blocks network messages
 
+#[cfg(feature = "arbitrary")]
+use arbitrary::{Arbitrary, Unstructured};
 use bitcoin::bip152;
 
 use crate::consensus::impl_consensus_encoding;
@@ -45,3 +47,31 @@ pub struct BlockTxn {
     pub transactions: bip152::BlockTransactions,
 }
 impl_consensus_encoding!(BlockTxn, transactions);
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for SendCmpct {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self { send_compact: u.arbitrary()?, version: u.arbitrary()? })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for CmpctBlock {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self { compact_block: u.arbitrary()? })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for GetBlockTxn {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self { txs_request: u.arbitrary()? })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for BlockTxn {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self { transactions: u.arbitrary()? })
+    }
+}

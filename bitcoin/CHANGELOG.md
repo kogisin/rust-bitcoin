@@ -6,7 +6,7 @@
 
 ## Breaking changes
 
-- Change Psbt serde implementation to contextually use the PSBT binary or base64 encoded formats described in BIP-174.
+- Change Psbt serde implementation to contextually use the PSBT binary or base64 encoded formats described in BIP-0174.
 
 # 0.33.0-alpha.0 - 2024-11-18
 
@@ -99,13 +99,13 @@ For changes to our dependencies included in this release see:
 - Pass keys by value [#2868](https://github.com/rust-bitcoin/rust-bitcoin/pull/2868)
 - Clarify the meaning of `Height` & `Time` based locktime [#2858](https://github.com/rust-bitcoin/rust-bitcoin/pull/2858)
 - Add API for extracting the inner payload of `RawNetworkMessage` [#2839](https://github.com/rust-bitcoin/rust-bitcoin/pull/2839)
-- Update `bitcoinconsensus` version to `0.106.0+26` [#2833] (https://github.com/rust-bitcoin/rust-bitcoin/pull/2833)
+- Update `bitcoinconsensus` version to `0.106.0+26` [#2833](https://github.com/rust-bitcoin/rust-bitcoin/pull/2833)
 - Make `difficulty_float` general to all networks [#2816](https://github.com/rust-bitcoin/rust-bitcoin/pull/2816)
 - Add const modifier to `Magic::from_bytes` [#2815](https://github.com/rust-bitcoin/rust-bitcoin/pull/2815)
 - Add an `AddressData` type [#2808](https://github.com/rust-bitcoin/rust-bitcoin/pull/2808)
 - Make `Address:p2sh_from_hash` public [#2795](https://github.com/rust-bitcoin/rust-bitcoin/pull/2795)
 - Enable getting the witness program from an address [#2796](https://github.com/rust-bitcoin/rust-bitcoin/pull/2796)
-- Enforce script size limit when hashing scripts [##2794](https://github.com/rust-bitcoin/rust-bitcoin/pull/2794https://github.com/rust-bitcoin/rust-bitcoin/pull/#2794)
+- Enforce script size limit when hashing scripts [#2794](https://github.com/rust-bitcoin/rust-bitcoin/pull/2794)
 - Deprecate `to_vec` in favour of `to_bytes` [#2768](https://github.com/rust-bitcoin/rust-bitcoin/pull/2768)
 - Flesh out hex unit parsing API [#2765](https://github.com/rust-bitcoin/rust-bitcoin/pull/2765)
 - Bench `base58` encoding and remove `SmallVec` to improve perf [#2759](https://github.com/rust-bitcoin/rust-bitcoin/pull/2759)
@@ -142,7 +142,7 @@ For changes to our dependencies included in this release see:
 
 # 0.32.3 - 2024-09-27
 
-- Backport BIP-32 alias' without typo [#3252](https://github.com/rust-bitcoin/rust-bitcoin/pull/3252)
+- Backport BIP-0032 alias' without typo [#3252](https://github.com/rust-bitcoin/rust-bitcoin/pull/3252)
 
 # 0.32.2 - 2024-06-07
 
@@ -171,7 +171,7 @@ might be what you are after.
   - `sig` becomes `signature`
   - `hash_ty` becomes `sighash_type`
 - Rename `txid` to `compute_txid` [#2366](https://github.com/rust-bitcoin/rust-bitcoin/pull/2366)
-- In hardcoded BIP-32 derivation paths: Remove `m/` prefix requirement [#2451](https://github.com/rust-bitcoin/rust-bitcoin/pull/2451)
+- In hardcoded BIP-0032 derivation paths: Remove `m/` prefix requirement [#2451](https://github.com/rust-bitcoin/rust-bitcoin/pull/2451)
 
 ## Crate smashing
 
@@ -262,7 +262,7 @@ In particular consider having some type that implements `AsRef<Params>`, we have
 # 0.31.1 - 2024-01-09
 
 - Fix bug in `FeeRate::checked_mul_by_weight` [#2128](https://github.com/rust-bitcoin/rust-bitcoin/pull/2182)
-- Add BIP-32 types remove in 0.31 back in and mark as deprecated [#2258](https://github.com/rust-bitcoin/rust-bitcoin/pull/2258)
+- Add BIP-0032 types remove in 0.31 back in and mark as deprecated [#2258](https://github.com/rust-bitcoin/rust-bitcoin/pull/2258)
 
 # 0.31.0 - 2023-10-18
 
@@ -397,7 +397,7 @@ This release is big, to help users upgrade we wrote a blog post, please see http
     all types except `Vec` and arrays, replace where appropriate with `FromStr`.
 
 - Performance improvements:
-  - [Remove needless allocation from BIP-158 encoding](https://github.com/rust-bitcoin/rust-bitcoin/pull/1146)
+  - [Remove needless allocation from BIP-0158 encoding](https://github.com/rust-bitcoin/rust-bitcoin/pull/1146)
   - [Implement fast hex encoding](https://github.com/rust-bitcoin/rust-bitcoin/pull/1268) (usage added in a [later PR](https://github.com/rust-bitcoin/rust-bitcoin/pull/1476))
 
 - Testing improvements:
@@ -678,10 +678,10 @@ the case and how we broke both `rust-miniscript` and BDK.
 # 0.19.0 - 2019-08-16
 
 * Add `Amount` and `SignedAmount` types.
-* Add BIP-158 support with `BlockFilter` and related types.
+* Add BIP-0158 support with `BlockFilter` and related types.
 * Add `util::misc::signed_msg_hash()` for signing messages.
 * Add `MerkleBlock` and `PartialMerkleTree` types.
-* bip32: Support serde serializaton for types and add some utility methods:
+* bip32: Support serde serialization for types and add some utility methods:
     * `ChildNumber::increment`
     * `DerivationPath::children_from`
     * `DerivationPath::normal_children`
@@ -784,7 +784,7 @@ the case and how we broke both `rust-miniscript` and BDK.
 * Use modern `as_` `to_` `into_` conventions for array-wrapping types; impl `Display` rather than `ToString` for most types
 * Change `script::Instructions` iterator [to allow rejecting non-minimal pushes](https://github.com/rust-bitcoin/rust-bitcoin/pull/136);
   fix bug where errors would iterate forever.
-* Overhaul `util::Error`; introduce `serialize::Error` [and use it for `SimpleDecoder` and `SimpleDecoder` rather
+* Overhaul `util::Error`; introduce `serialize::Error` [and use it for `SimpleDecoder` and `SimpleEncoder` rather
   than parameterizing these over their error type](https://github.com/rust-bitcoin/rust-bitcoin/pull/137).
 * Overhaul `UDecimal` and `Decimal` serialization and parsing [and fix many lingering parsing bugs](https://github.com/rust-bitcoin/rust-bitcoin/pull/142)
 * [Update to serde 1.0 and strason 0.4](https://github.com/rust-bitcoin/rust-bitcoin/pull/125)
@@ -808,7 +808,7 @@ the case and how we broke both `rust-miniscript` and BDK.
 * The in-memory blockchain was moved into a dedicated project rust-bitcoin-chain.
 * Removed old script interpreter
 * A new optional feature "bitcoinconsensus" lets this library use Bitcoin Core's native
-script verifier, wrappend into Rust by the rust-bitcoinconsenus project.
+script verifier, wrapped into Rust by the rust-bitcoinconsensus project.
 See `Transaction::verify` and `Script::verify` methods.
 * Replaced Base58 traits with `encode_slice`, `check_encode_slice`, from and `from_check` functions in the base58 module.
 * Un-reversed the Debug output for Sha256dHash

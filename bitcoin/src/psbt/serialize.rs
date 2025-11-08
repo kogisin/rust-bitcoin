@@ -3,7 +3,7 @@
 //! PSBT serialization.
 //!
 //! Traits to serialize PSBT values to and from raw bytes
-//! according to the BIP-174 specification.
+//! according to the BIP-0174 specification.
 
 use hashes::{hash160, ripemd160, sha256, sha256d};
 use internals::compact_size;
@@ -28,28 +28,28 @@ use crate::witness::Witness;
 /// A trait for serializing a value as raw data for insertion into PSBT
 /// key-value maps.
 pub(crate) trait Serialize {
-    /// Serialize a value as raw data.
+    /// Serializes a value as raw data.
     fn serialize(&self) -> Vec<u8>;
 }
 
 /// A trait for deserializing a value from raw data in PSBT key-value maps.
 pub(crate) trait Deserialize: Sized {
-    /// Deserialize a value from raw data.
+    /// Deserializes a value from raw data.
     fn deserialize(bytes: &[u8]) -> Result<Self, Error>;
 }
 
 impl Psbt {
-    /// Serialize a value as bytes in hex.
+    /// Serializes a value as bytes in hex.
     pub fn serialize_hex(&self) -> String { self.serialize().to_lower_hex_string() }
 
-    /// Serialize as raw binary data
+    /// Serializes as raw binary data
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
         self.serialize_to_writer(&mut buf).expect("Writing to Vec can't fail");
         buf
     }
 
-    /// Serialize the PSBT into a writer.
+    /// Serializes the PSBT into a writer.
     pub fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<usize> {
         let mut written_len = 0;
 
@@ -75,12 +75,12 @@ impl Psbt {
         Ok(written_len)
     }
 
-    /// Deserialize a value from raw binary data.
+    /// Deserializes a value from raw binary data.
     pub fn deserialize(mut bytes: &[u8]) -> Result<Self, Error> {
         Self::deserialize_from_reader(&mut bytes)
     }
 
-    /// Deserialize a value from raw binary data read from a `BufRead` object.
+    /// Deserializes a value from raw binary data read from a `BufRead` object.
     pub fn deserialize_from_reader<R: io::BufRead>(r: &mut R) -> Result<Self, Error> {
         const MAGIC_BYTES: &[u8] = b"psbt";
 
@@ -89,24 +89,24 @@ impl Psbt {
             return Err(Error::InvalidMagic);
         }
 
-        const PSBT_SERPARATOR: u8 = 0xff_u8;
+        const PSBT_SEPARATOR: u8 = 0xff_u8;
         let separator: u8 = Decodable::consensus_decode(r)?;
-        if separator != PSBT_SERPARATOR {
+        if separator != PSBT_SEPARATOR {
             return Err(Error::InvalidSeparator);
         }
 
-        let mut global = Psbt::decode_global(r)?;
+        let mut global = Self::decode_global(r)?;
         global.unsigned_tx_checks()?;
 
         let inputs: Vec<Input> = {
-            let inputs_len: usize = (global.unsigned_tx.input).len();
+            let inputs_len: usize = (global.unsigned_tx.inputs).len();
 
             let mut inputs: Vec<Input> = Vec::with_capacity(inputs_len);
 
             for i in 0..inputs_len {
                 let input = Input::decode(r)?;
                 if let Some(ref tx) = input.non_witness_utxo {
-                    let input_outpoint = global.unsigned_tx.input[i].previous_output;
+                    let input_outpoint = global.unsigned_tx.inputs[i].previous_output;
                     let txid = tx.compute_txid();
                     if txid != input_outpoint.txid {
                         return Err(Error::IncorrectNonWitnessUtxo {
@@ -123,7 +123,7 @@ impl Psbt {
         };
 
         let outputs: Vec<Output> = {
-            let outputs_len: usize = (global.unsigned_tx.output).len();
+            let outputs_len: usize = (global.unsigned_tx.outputs).len();
 
             let mut outputs: Vec<Output> = Vec::with_capacity(outputs_len);
 
@@ -152,11 +152,11 @@ impl_psbt_hash_de_serialize!(sha256d::Hash);
 // Taproot
 impl_psbt_de_serialize!(Vec<TapLeafHash>);
 
-impl Serialize for ScriptBuf {
+impl<T> Serialize for ScriptBuf<T> {
     fn serialize(&self) -> Vec<u8> { self.to_vec() }
 }
 
-impl Deserialize for ScriptBuf {
+impl<T> Deserialize for ScriptBuf<T> {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> { Ok(Self::from(bytes.to_vec())) }
 }
 
@@ -170,7 +170,7 @@ impl Serialize for PublicKey {
 
 impl Deserialize for PublicKey {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        PublicKey::from_slice(bytes).map_err(Error::InvalidPublicKey)
+        Self::from_slice(bytes).map_err(Error::InvalidPublicKey)
     }
 }
 
@@ -180,7 +180,7 @@ impl Serialize for secp256k1::PublicKey {
 
 impl Deserialize for secp256k1::PublicKey {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        secp256k1::PublicKey::from_slice(bytes).map_err(Error::InvalidSecp256k1PublicKey)
+        Self::from_slice(bytes).map_err(Error::InvalidSecp256k1PublicKey)
     }
 }
 
@@ -212,7 +212,7 @@ impl Serialize for ecdsa::Signature {
 
 impl Deserialize for ecdsa::Signature {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        // NB: Since BIP-174 says "the signature as would be pushed to the stack from
+        // NB: Since BIP-0174 says "the signature as would be pushed to the stack from
         // a scriptSig or witness" we should ideally use a consensus deserialization and do
         // not error on a non-standard values. However,
         //
@@ -222,10 +222,10 @@ impl Deserialize for ecdsa::Signature {
         // EcdsaSig::from_slice(&sl[..]).to_vec = sl.
         //
         // 2) This would cause to have invalid signatures because the sighash message
-        // also has a field sighash_u32 (See BIP141). For example, when signing with non-standard
+        // also has a field sighash_u32 (See BIP-0141). For example, when signing with non-standard
         // 0x05, the sighash message would have the last field as 0x05u32 while, the verification
-        // would use check the signature assuming sighash_u32 as `0x01`.
-        ecdsa::Signature::from_slice(bytes).map_err(|e| match e {
+        // would check the signature assuming sighash_u32 as `0x01`.
+        Self::from_slice(bytes).map_err(|e| match e {
             ecdsa::DecodeError::EmptySignature => Error::InvalidEcdsaSignature(e),
             ecdsa::DecodeError::SighashType(err) => Error::NonStandardSighashType(err.0),
             ecdsa::DecodeError::Secp256k1(..) => Error::InvalidEcdsaSignature(e),
@@ -282,18 +282,18 @@ impl Serialize for PsbtSighashType {
 impl Deserialize for PsbtSighashType {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
         let raw: u32 = encode::deserialize(bytes)?;
-        Ok(PsbtSighashType { inner: raw })
+        Ok(Self { inner: raw })
     }
 }
 
 // Taproot related ser/deser
 impl Serialize for XOnlyPublicKey {
-    fn serialize(&self) -> Vec<u8> { XOnlyPublicKey::serialize(self).to_vec() }
+    fn serialize(&self) -> Vec<u8> { Self::serialize(self).to_vec() }
 }
 
 impl Deserialize for XOnlyPublicKey {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        XOnlyPublicKey::from_byte_array(bytes.try_into().map_err(|_| Error::InvalidXOnlyPublicKey)?)
+        Self::from_byte_array(bytes.try_into().map_err(|_| Error::InvalidXOnlyPublicKey)?)
             .map_err(|_| Error::InvalidXOnlyPublicKey)
     }
 }
@@ -306,7 +306,7 @@ impl Deserialize for taproot::Signature {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
         use taproot::SigFromSliceError::*;
 
-        taproot::Signature::from_slice(bytes).map_err(|e| match e {
+        Self::from_slice(bytes).map_err(|e| match e {
             SighashType(err) => Error::NonStandardSighashType(err.0),
             InvalidSignatureSize(_) => Error::InvalidTaprootSignature(e),
             Secp256k1(..) => Error::InvalidTaprootSignature(e),
@@ -336,7 +336,7 @@ impl Deserialize for (XOnlyPublicKey, TapLeafHash) {
 }
 
 impl Serialize for ControlBlock {
-    fn serialize(&self) -> Vec<u8> { ControlBlock::serialize(self) }
+    fn serialize(&self) -> Vec<u8> { Self::serialize(self) }
 }
 
 impl Deserialize for ControlBlock {
@@ -346,7 +346,7 @@ impl Deserialize for ControlBlock {
 }
 
 // Versioned ScriptBuf
-impl Serialize for (ScriptBuf, LeafVersion) {
+impl<T> Serialize for (ScriptBuf<T>, LeafVersion) {
     fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.0.len() + 1);
         buf.extend(self.0.as_bytes());
@@ -355,7 +355,7 @@ impl Serialize for (ScriptBuf, LeafVersion) {
     }
 }
 
-impl Deserialize for (ScriptBuf, LeafVersion) {
+impl<T> Deserialize for (ScriptBuf<T>, LeafVersion) {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.is_empty() {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
@@ -415,7 +415,7 @@ impl Deserialize for TapTree {
         let mut bytes_iter = bytes.iter();
         while let Some(depth) = bytes_iter.next() {
             let version = bytes_iter.next().ok_or(Error::Taproot("invalid Taproot Builder"))?;
-            let (script, consumed) = deserialize_partial::<ScriptBuf>(bytes_iter.as_slice())?;
+            let (script, consumed) = deserialize_partial::<ScriptBuf<_>>(bytes_iter.as_slice())?;
             if consumed > 0 {
                 bytes_iter.nth(consumed - 1);
             }
@@ -425,7 +425,7 @@ impl Deserialize for TapTree {
                 .add_leaf_with_ver(*depth, script, leaf_version)
                 .map_err(|_| Error::Taproot("Tree not in DFS order"))?;
         }
-        TapTree::try_from(builder).map_err(Error::TapTree)
+        Self::try_from(builder).map_err(Error::TapTree)
     }
 }
 
@@ -436,8 +436,9 @@ fn key_source_len(key_source: &KeySource) -> usize { 4 + 4 * (key_source.1).as_r
 mod tests {
     use super::*;
     use crate::script::ScriptBufExt as _;
+    use crate::TapScriptBuf;
 
-    // Composes tree matching a given depth map, filled with dumb script leafs,
+    // Composes tree matching a given depth map, filled with dumb script leaves,
     // each of which consists of a single push-int op code, with int value
     // increased for each consecutive leaf.
     pub fn compose_taproot_builder<'map>(
@@ -447,7 +448,7 @@ mod tests {
         let mut val = opcode;
         let mut builder = TaprootBuilder::new();
         for depth in depth_map {
-            let script = ScriptBuf::from_hex_no_length_prefix(&format!("{:02x}", val)).unwrap();
+            let script = TapScriptBuf::from_hex_no_length_prefix(&format!("{:02x}", val)).unwrap();
             builder = builder.add_leaf(*depth, script).unwrap();
             let (new_val, _) = val.overflowing_add(1);
             val = new_val;
@@ -462,7 +463,7 @@ mod tests {
         builder = builder
             .add_leaf_with_ver(
                 3,
-                ScriptBuf::from_hex_no_length_prefix("b9").unwrap(),
+                TapScriptBuf::from_hex_no_length_prefix("b9").unwrap(),
                 LeafVersion::from_consensus(0xC2).unwrap(),
             )
             .unwrap();
@@ -476,7 +477,7 @@ mod tests {
         builder = builder
             .add_leaf_with_ver(
                 3,
-                ScriptBuf::from_hex_no_length_prefix("b9").unwrap(),
+                TapScriptBuf::from_hex_no_length_prefix("b9").unwrap(),
                 LeafVersion::from_consensus(0xC2).unwrap(),
             )
             .unwrap();

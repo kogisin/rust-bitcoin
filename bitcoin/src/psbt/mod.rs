@@ -2,7 +2,7 @@
 
 //! Partially Signed Bitcoin Transactions.
 //!
-//! Implementation of BIP174 Partially Signed Bitcoin Transaction Format as
+//! Implementation of BIP-0174 Partially Signed Bitcoin Transaction Format as
 //! defined at <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>
 //! except we define PSBTs containing non-standard sighash types as invalid.
 
@@ -26,10 +26,10 @@ use crate::crypto::key::{PrivateKey, PublicKey};
 use crate::crypto::{ecdsa, taproot};
 use crate::key::{TapTweak, XOnlyPublicKey};
 use crate::prelude::{btree_map, BTreeMap, BTreeSet, Borrow, Box, Vec};
-use crate::script::ScriptExt as _;
+use crate::script::{ScriptExt as _, ScriptPubKeyExt as _};
 use crate::sighash::{self, EcdsaSighashType, Prevouts, SighashCache};
 use crate::transaction::{self, Transaction, TransactionExt as _, TxOut};
-use crate::{Amount, FeeRate, TapLeafHash, TapSighashType};
+use crate::{Amount, FeeRate, TapLeafHash, TapSighash, TapSighashType};
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(inline)]
@@ -73,13 +73,13 @@ impl Psbt {
     ///
     /// The function panics if the length of transaction inputs is not equal to the length of PSBT inputs.
     pub fn iter_funding_utxos(&self) -> impl Iterator<Item = Result<&TxOut, Error>> {
-        assert_eq!(self.inputs.len(), self.unsigned_tx.input.len());
-        self.unsigned_tx.input.iter().zip(&self.inputs).map(|(tx_input, psbt_input)| {
+        assert_eq!(self.inputs.len(), self.unsigned_tx.inputs.len());
+        self.unsigned_tx.inputs.iter().zip(&self.inputs).map(|(tx_input, psbt_input)| {
             match (&psbt_input.witness_utxo, &psbt_input.non_witness_utxo) {
                 (Some(witness_utxo), _) => Ok(witness_utxo),
                 (None, Some(non_witness_utxo)) => {
                     let vout = tx_input.previous_output.vout as usize;
-                    non_witness_utxo.output.get(vout).ok_or(Error::PsbtUtxoOutOfbounds)
+                    non_witness_utxo.outputs.get(vout).ok_or(Error::PsbtUtxoOutOfbounds)
                 }
                 (None, None) => Err(Error::MissingUtxo),
             }
@@ -88,7 +88,7 @@ impl Psbt {
 
     /// Checks that unsigned transaction does not have scriptSig's or witness data.
     fn unsigned_tx_checks(&self) -> Result<(), Error> {
-        for txin in &self.unsigned_tx.input {
+        for txin in &self.unsigned_tx.inputs {
             if !txin.script_sig.is_empty() {
                 return Err(Error::UnsignedTxHasScriptSigs);
             }
@@ -107,9 +107,9 @@ impl Psbt {
     ///
     /// If transactions is not unsigned.
     pub fn from_unsigned_tx(tx: Transaction) -> Result<Self, Error> {
-        let psbt = Psbt {
-            inputs: vec![Default::default(); tx.input.len()],
-            outputs: vec![Default::default(); tx.output.len()],
+        let psbt = Self {
+            inputs: vec![Default::default(); tx.inputs.len()],
+            outputs: vec![Default::default(); tx.outputs.len()],
 
             unsigned_tx: tx,
             xpub: Default::default(),
@@ -175,7 +175,7 @@ impl Psbt {
     fn internal_extract_tx(self) -> Transaction {
         let mut tx: Transaction = self.unsigned_tx;
 
-        for (vin, psbtin) in tx.input.iter_mut().zip(self.inputs.into_iter()) {
+        for (vin, psbtin) in tx.inputs.iter_mut().zip(self.inputs.into_iter()) {
             vin.script_sig = psbtin.final_script_sig.unwrap_or_default();
             vin.witness = psbtin.final_script_witness.unwrap_or_default();
         }
@@ -192,7 +192,7 @@ impl Psbt {
         let fee = match self.fee() {
             Ok(fee) => fee,
             Err(Error::MissingUtxo) =>
-                return Err(ExtractTxError::MissingInputValue { tx: self.internal_extract_tx() }),
+                return Err(ExtractTxError::MissingInputAmount { tx: self.internal_extract_tx() }),
             Err(Error::NegativeFee) => return Err(ExtractTxError::SendingTooMuch { psbt: self }),
             Err(Error::FeeOverflow) =>
                 return Err(ExtractTxError::AbsurdFeeRate {
@@ -213,9 +213,9 @@ impl Psbt {
         }
     }
 
-    /// Combines this [`Psbt`] with `other` PSBT as described by BIP 174.
+    /// Combines this [`Psbt`] with `other` PSBT as described by BIP-0174.
     ///
-    /// In accordance with BIP 174 this function is commutative i.e., `A.combine(B) == B.combine(A)`
+    /// In accordance with BIP-0174 this function is commutative i.e., `A.combine(B) == B.combine(A)`
     pub fn combine(&mut self, other: Self) -> Result<(), Error> {
         if self.unsigned_tx != other.unsigned_tx {
             return Err(Error::UnexpectedUnsignedTx {
@@ -224,7 +224,7 @@ impl Psbt {
             });
         }
 
-        // BIP 174: The Combiner must remove any duplicate key-value pairs, in accordance with
+        // BIP-0174: The Combiner must remove any duplicate key-value pairs, in accordance with
         //          the specification. It can pick arbitrarily when conflicts occur.
 
         // Keeping the highest version
@@ -434,20 +434,21 @@ impl Psbt {
 
             // key path spend
             if let Some(internal_key) = input.tap_internal_key {
-                // BIP 371: The internal key does not have leaf hashes, so can be indicated with a hashes len of 0.
+                // BIP-0371: The internal key does not have leaf hashes, so can be indicated with a hashes len of 0.
 
                 // Based on input.tap_internal_key.is_some() alone, it is not sufficient to determine whether it is a key path spend.
-                // According to BIP 371, we also need to consider the condition leaf_hashes.is_empty() for a more accurate determination.
+                // According to BIP-0371, we also need to consider the condition leaf_hashes.is_empty() for a more accurate determination.
                 if internal_key == xonly && leaf_hashes.is_empty() && input.tap_key_sig.is_none() {
-                    let (msg, sighash_type) = self.sighash_taproot(input_index, cache, None)?;
+                    let (sighash, sighash_type) = self.sighash_taproot(input_index, cache, None)?;
                     let key_pair = Keypair::from_secret_key(secp, &sk.inner)
                         .tap_tweak(secp, input.tap_merkle_root)
                         .to_keypair();
 
                     #[cfg(feature = "rand-std")]
-                    let signature = secp.sign_schnorr(msg.as_ref(), &key_pair);
+                    let signature = secp.sign_schnorr(&sighash.to_byte_array(), &key_pair);
                     #[cfg(not(feature = "rand-std"))]
-                    let signature = secp.sign_schnorr_no_aux_rand(msg.as_ref(), &key_pair);
+                    let signature =
+                        secp.sign_schnorr_no_aux_rand(&sighash.to_byte_array(), &key_pair);
 
                     let signature = taproot::Signature { signature, sighash_type };
                     input.tap_key_sig = Some(signature);
@@ -468,13 +469,14 @@ impl Psbt {
                     let key_pair = Keypair::from_secret_key(secp, &sk.inner);
 
                     for lh in leaf_hashes {
-                        let (msg, sighash_type) =
+                        let (sighash, sighash_type) =
                             self.sighash_taproot(input_index, cache, Some(lh))?;
 
                         #[cfg(feature = "rand-std")]
-                        let signature = secp.sign_schnorr(msg.as_ref(), &key_pair);
+                        let signature = secp.sign_schnorr(&sighash.to_byte_array(), &key_pair);
                         #[cfg(not(feature = "rand-std"))]
-                        let signature = secp.sign_schnorr_no_aux_rand(msg.as_ref(), &key_pair);
+                        let signature =
+                            secp.sign_schnorr_no_aux_rand(&sighash.to_byte_array(), &key_pair);
 
                         let signature = taproot::Signature { signature, sighash_type };
                         input.tap_script_sigs.insert((xonly, lh), signature);
@@ -528,20 +530,25 @@ impl Psbt {
                 Ok((Message::from(sighash), hash_ty))
             }
             Wpkh => {
-                let sighash = cache.p2wpkh_signature_hash(input_index, spk, utxo.value, hash_ty)?;
+                let sighash =
+                    cache.p2wpkh_signature_hash(input_index, spk, utxo.amount, hash_ty)?;
                 Ok((Message::from(sighash), hash_ty))
             }
             ShWpkh => {
                 let redeem_script = input.redeem_script.as_ref().expect("checked above");
-                let sighash =
-                    cache.p2wpkh_signature_hash(input_index, redeem_script, utxo.value, hash_ty)?;
+                let sighash = cache.p2wpkh_signature_hash(
+                    input_index,
+                    redeem_script,
+                    utxo.amount,
+                    hash_ty,
+                )?;
                 Ok((Message::from(sighash), hash_ty))
             }
             Wsh | ShWsh => {
                 let witness_script =
                     input.witness_script.as_ref().ok_or(SignError::MissingWitnessScript)?;
                 let sighash = cache
-                    .p2wsh_signature_hash(input_index, witness_script, utxo.value, hash_ty)
+                    .p2wsh_signature_hash(input_index, witness_script, utxo.amount, hash_ty)
                     .map_err(SignError::SegwitV0Sighash)?;
                 Ok((Message::from(sighash), hash_ty))
             }
@@ -552,7 +559,7 @@ impl Psbt {
         }
     }
 
-    /// Returns the sighash message to sign an SCHNORR input along with the sighash type.
+    /// Returns the sighash to sign a Taproot input along with the sighash type.
     ///
     /// Uses the [`TapSighashType`] from this input if one is specified. If no sighash type is
     /// specified uses [`TapSighashType::Default`].
@@ -561,7 +568,7 @@ impl Psbt {
         input_index: usize,
         cache: &mut SighashCache<T>,
         leaf_hash: Option<TapLeafHash>,
-    ) -> Result<(Message, TapSighashType), SignError> {
+    ) -> Result<(TapSighash, TapSighashType), SignError> {
         use OutputType::*;
 
         if self.signing_algorithm(input_index)? != SigningAlgorithm::Schnorr {
@@ -606,7 +613,7 @@ impl Psbt {
                 } else {
                     cache.taproot_key_spend_signature_hash(input_index, &prev_outs, hash_ty)?
                 };
-                Ok((Message::from(sighash), hash_ty))
+                Ok((sighash, hash_ty))
             }
             _ => Err(SignError::Unsupported),
         }
@@ -618,8 +625,8 @@ impl Psbt {
         let utxo = if let Some(witness_utxo) = &input.witness_utxo {
             witness_utxo
         } else if let Some(non_witness_utxo) = &input.non_witness_utxo {
-            let vout = self.unsigned_tx.input[input_index].previous_output.vout;
-            &non_witness_utxo.output[vout as usize]
+            let vout = self.unsigned_tx.inputs[input_index].previous_output.vout;
+            &non_witness_utxo.outputs[vout as usize]
         } else {
             return Err(SignError::MissingSpendUtxo);
         };
@@ -648,10 +655,10 @@ impl Psbt {
             });
         }
 
-        if input_index >= self.unsigned_tx.input.len() {
+        if input_index >= self.unsigned_tx.inputs.len() {
             return Err(IndexOutOfBoundsError::TxInput {
                 index: input_index,
-                length: self.unsigned_tx.input.len(),
+                length: self.unsigned_tx.inputs.len(),
             });
         }
 
@@ -664,7 +671,7 @@ impl Psbt {
         Ok(output_type.signing_algorithm())
     }
 
-    /// Returns the [`OutputType`] of the spend utxo for this PBST's input at `input_index`.
+    /// Returns the [`OutputType`] of the spend utxo for this PSBT's input at `input_index`.
     fn output_type(&self, input_index: usize) -> Result<OutputType, SignError> {
         let input = self.checked_input(input_index)?;
         let utxo = self.spend_utxo(input_index)?;
@@ -715,11 +722,11 @@ impl Psbt {
     pub fn fee(&self) -> Result<Amount, Error> {
         let mut inputs = Amount::ZERO;
         for utxo in self.iter_funding_utxos() {
-            inputs = inputs.checked_add(utxo?.value).ok_or(Error::FeeOverflow)?;
+            inputs = inputs.checked_add(utxo?.amount).ok_or(Error::FeeOverflow)?;
         }
         let mut outputs = Amount::ZERO;
-        for out in &self.unsigned_tx.output {
-            outputs = outputs.checked_add(out.value).ok_or(Error::FeeOverflow)?;
+        for out in &self.unsigned_tx.outputs {
+            outputs = outputs.checked_add(out.amount).ok_or(Error::FeeOverflow)?;
         }
         inputs.checked_sub(outputs).ok_or(Error::NegativeFee)
     }
@@ -746,7 +753,7 @@ impl<'de> serde::Deserialize<'de> for Psbt {
     {
         struct Visitor;
 
-        impl<'de> serde::de::Visitor<'de> for Visitor {
+        impl serde::de::Visitor<'_> for Visitor {
             type Value = Psbt;
 
             fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -776,7 +783,7 @@ impl<'de> serde::Deserialize<'de> for Psbt {
 pub enum KeyRequest {
     /// Request a private key using the associated public key.
     Pubkey(PublicKey),
-    /// Request a private key using BIP-32 fingerprint and derivation path.
+    /// Request a private key using BIP-0032 fingerprint and derivation path.
     Bip32(KeySource),
     /// Request a private key using the associated x-only public key.
     XOnlyPubkey(XOnlyPublicKey),
@@ -1050,7 +1057,7 @@ pub enum SignError {
     MissingWitnessScript,
     /// Signing algorithm and key type does not match.
     MismatchedAlgoKey,
-    /// Attempted to ECDSA sign an non-ECDSA input.
+    /// Attempted to ECDSA sign a non-ECDSA input.
     NotEcdsa,
     /// The `scriptPubkey` is not a P2WPKH script.
     NotWpkh,
@@ -1081,12 +1088,12 @@ impl fmt::Display for SignError {
         match *self {
             IndexOutOfBounds(ref e) => write_err!(f, "index out of bounds"; e),
             InvalidSighashType => write!(f, "invalid sighash type"),
-            MissingInputUtxo => write!(f, "missing input utxo in PBST"),
+            MissingInputUtxo => write!(f, "missing input utxo in PSBT"),
             MissingRedeemScript => write!(f, "missing redeem script"),
             MissingSpendUtxo => write!(f, "missing spend utxo in PSBT"),
             MissingWitnessScript => write!(f, "missing witness script"),
             MismatchedAlgoKey => write!(f, "signing algorithm and key type does not match"),
-            NotEcdsa => write!(f, "attempted to ECDSA sign an non-ECDSA input"),
+            NotEcdsa => write!(f, "attempted to ECDSA sign a non-ECDSA input"),
             NotWpkh => write!(f, "the scriptPubkey is not a P2WPKH script"),
             SegwitV0Sighash(ref e) => write_err!(f, "SegWit v0 sighash"; e),
             P2wpkhSighash(ref e) => write_err!(f, "p2wpkh sighash"; e),
@@ -1131,11 +1138,11 @@ impl From<sighash::P2wpkhError> for SignError {
 }
 
 impl From<IndexOutOfBoundsError> for SignError {
-    fn from(e: IndexOutOfBoundsError) -> Self { SignError::IndexOutOfBounds(e) }
+    fn from(e: IndexOutOfBoundsError) -> Self { Self::IndexOutOfBounds(e) }
 }
 
 impl From<sighash::TaprootError> for SignError {
-    fn from(e: sighash::TaprootError) -> Self { SignError::TaprootError(e) }
+    fn from(e: sighash::TaprootError) -> Self { Self::TaprootError(e) }
 }
 
 /// This error is returned when extracting a [`Transaction`] from a [`Psbt`].
@@ -1149,12 +1156,12 @@ pub enum ExtractTxError {
         /// The extracted [`Transaction`] (use this to ignore the error)
         tx: Transaction,
     },
-    /// One or more of the inputs lacks value information (witness_utxo or non_witness_utxo)
-    MissingInputValue {
+    /// One or more of the inputs lacks amount information (witness_utxo or non_witness_utxo)
+    MissingInputAmount {
         /// The extracted [`Transaction`] (use this to ignore the error)
         tx: Transaction,
     },
-    /// Input value is less than Output Value, and the [`Transaction`] would be invalid.
+    /// Input amount is less than output amount, and the [`Transaction`] would be invalid.
     SendingTooMuch {
         /// The original [`Psbt`] is returned untouched.
         psbt: Psbt,
@@ -1175,13 +1182,13 @@ impl fmt::Display for ExtractTxError {
                 "an absurdly high fee rate of {} sat/kwu",
                 fee_rate.to_sat_per_kwu_floor()
             ),
-            MissingInputValue { .. } => write!(
+            MissingInputAmount { .. } => write!(
                 f,
-                "one of the inputs lacked value information (witness_utxo or non_witness_utxo)"
+                "one of the inputs lacked amount information (witness_utxo or non_witness_utxo)"
             ),
             SendingTooMuch { .. } => write!(
                 f,
-                "transaction would be invalid due to output value being greater than input value."
+                "transaction would be invalid due to output amount being greater than input amount."
             ),
         }
     }
@@ -1193,7 +1200,7 @@ impl std::error::Error for ExtractTxError {
         use ExtractTxError::*;
 
         match *self {
-            AbsurdFeeRate { .. } | MissingInputValue { .. } | SendingTooMuch { .. } => None,
+            AbsurdFeeRate { .. } | MissingInputAmount { .. } | SendingTooMuch { .. } => None,
         }
     }
 }
@@ -1206,14 +1213,14 @@ pub enum IndexOutOfBoundsError {
     Inputs {
         /// Attempted index access.
         index: usize,
-        /// Length of the PBST inputs vector.
+        /// Length of the PSBT inputs vector.
         length: usize,
     },
     /// The index is out of bounds for the `psbt.unsigned_tx.input` vector.
     TxInput {
         /// Attempted index access.
         index: usize,
-        /// Length of the PBST's unsigned transaction input vector.
+        /// Length of the PSBT's unsigned transaction input vector.
         length: usize,
     },
 }
@@ -1312,7 +1319,7 @@ mod display_from_str {
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
             let data = BASE64_STANDARD.decode(s).map_err(PsbtParseError::Base64Encoding)?;
-            Psbt::deserialize(&data).map_err(PsbtParseError::PsbtEncoding)
+            Self::deserialize(&data).map_err(PsbtParseError::PsbtEncoding)
         }
     }
 }
@@ -1330,6 +1337,7 @@ mod tests {
     use {
         crate::bip32::Fingerprint,
         crate::locktime,
+        crate::script::ScriptPubKeyBufExt as _,
         crate::witness_version::WitnessVersion,
         crate::WitnessProgram,
         secp256k1::{All, SecretKey},
@@ -1340,7 +1348,9 @@ mod tests {
     use crate::locktime::absolute;
     use crate::network::NetworkKind;
     use crate::psbt::serialize::{Deserialize, Serialize};
-    use crate::script::{ScriptBuf, ScriptBufExt as _};
+    use crate::script::{
+        RedeemScriptBuf, ScriptBufExt as _, ScriptPubKeyBuf, ScriptSigBuf, WitnessScriptBuf,
+    };
     use crate::transaction::{self, OutPoint, TxIn};
     use crate::witness::Witness;
     use crate::Sequence;
@@ -1355,25 +1365,25 @@ mod tests {
     }
 
     #[track_caller]
-    fn psbt_with_values(input: u64, output: u64) -> Psbt {
+    fn psbt_with_amounts(input: u64, output: u64) -> Psbt {
         Psbt {
             unsigned_tx: Transaction {
                 version: transaction::Version::TWO,
                 lock_time: absolute::LockTime::ZERO,
-                input: vec![TxIn {
+                inputs: vec![TxIn {
                     previous_output: OutPoint {
                         txid: "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126"
                             .parse()
                             .unwrap(),
                         vout: 0,
                     },
-                    script_sig: ScriptBuf::new(),
+                    script_sig: ScriptSigBuf::new(),
                     sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
                     witness: Witness::default(),
                 }],
-                output: vec![TxOut {
-                    value: Amount::from_sat(output).unwrap(),
-                    script_pubkey: ScriptBuf::from_hex_no_length_prefix(
+                outputs: vec![TxOut {
+                    amount: Amount::from_sat(output).unwrap(),
+                    script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(
                         "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787",
                     )
                     .unwrap(),
@@ -1386,8 +1396,8 @@ mod tests {
 
             inputs: vec![Input {
                 witness_utxo: Some(TxOut {
-                    value: Amount::from_sat(input).unwrap(),
-                    script_pubkey: ScriptBuf::from_hex_no_length_prefix(
+                    amount: Amount::from_sat(input).unwrap(),
+                    script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(
                         "a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587",
                     )
                     .unwrap(),
@@ -1404,8 +1414,8 @@ mod tests {
             unsigned_tx: Transaction {
                 version: transaction::Version::TWO,
                 lock_time: absolute::LockTime::ZERO,
-                input: vec![],
-                output: vec![],
+                inputs: vec![],
+                outputs: vec![],
             },
             xpub: Default::default(),
             version: 0,
@@ -1428,7 +1438,7 @@ mod tests {
 
     #[test]
     fn psbt_high_fee_checks() {
-        let psbt = psbt_with_values(Amount::MAX.to_sat(), 1000);
+        let psbt = psbt_with_amounts(Amount::MAX.to_sat(), 1000);
 
         // We cannot create an expected fee rate to test against because `FeeRate::from_sat_per_mvb` is private.
         // Large fee rate errors if we pass in 1 sat/vb so just use this to get the error fee rate returned.
@@ -1437,7 +1447,7 @@ mod tests {
             .extract_tx_with_fee_rate_limit(FeeRate::from_sat_per_vb(1))
             .map_err(|e| match e {
                 ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
-                _ => panic!(""),
+                other => panic!("expected AbsurdFeeRate error, got {other:?}"),
             })
             .unwrap_err();
 
@@ -1449,35 +1459,35 @@ mod tests {
         assert_eq!(
             psbt.clone().extract_tx().map_err(|e| match e {
                 ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
-                _ => panic!(""),
+                other => panic!("expected AbsurdFeeRate error, got {other:?}"),
             }),
             Err(error_fee_rate)
         );
         assert_eq!(
-            psbt.clone().extract_tx_fee_rate_limit().map_err(|e| match e {
+            psbt.extract_tx_fee_rate_limit().map_err(|e| match e {
                 ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
-                _ => panic!(""),
+                other => panic!("expected AbsurdFeeRate error, got {other:?}"),
             }),
             Err(error_fee_rate)
         );
 
         // No one is using an ~50 BTC fee so if we can handle this
         // then the `FeeRate` restrictions are fine for PSBT usage.
-        let psbt = psbt_with_values(Amount::from_btc_u16(50).to_sat(), 1000); // fee = 50 BTC - 1000 sats
+        let psbt = psbt_with_amounts(Amount::from_btc_u16(50).to_sat(), 1000); // fee = 50 BTC - 1000 sats
         assert!(psbt.extract_tx_with_fee_rate_limit(FeeRate::MAX).is_ok());
 
         // Testing that extract_tx will error at 25k sat/vbyte (6250000 sat/kwu)
         assert_eq!(
-            psbt_with_values(2076001, 1000).extract_tx().map_err(|e| match e {
+            psbt_with_amounts(2076001, 1000).extract_tx().map_err(|e| match e {
                 ExtractTxError::AbsurdFeeRate { fee_rate, .. } => fee_rate,
-                _ => panic!(""),
+                other => panic!("expected AbsurdFeeRate error, got {other:?}"),
             }),
             Err(FeeRate::from_sat_per_kwu(6250003)) // 6250000 is 25k sat/vbyte
         );
 
         // Lowering the input satoshis by 1 lowers the sat/kwu by 3
         // Putting it exactly at 25k sat/vbyte
-        assert!(psbt_with_values(2076000, 1000).extract_tx().is_ok());
+        assert!(psbt_with_amounts(2076000, 1000).extract_tx().is_ok());
     }
 
     #[test]
@@ -1510,13 +1520,13 @@ mod tests {
 
         let expected: Output = Output {
             redeem_script: Some(
-                ScriptBuf::from_hex_no_length_prefix(
+                RedeemScriptBuf::from_hex_no_length_prefix(
                     "76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac",
                 )
                 .unwrap(),
             ),
             witness_script: Some(
-                ScriptBuf::from_hex_no_length_prefix(
+                WitnessScriptBuf::from_hex_no_length_prefix(
                     "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787",
                 )
                 .unwrap(),
@@ -1536,28 +1546,28 @@ mod tests {
             unsigned_tx: Transaction {
                 version: transaction::Version::TWO,
                 lock_time: absolute::LockTime::from_consensus(1257139),
-                input: vec![TxIn {
+                inputs: vec![TxIn {
                     previous_output: OutPoint {
                         txid: "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126"
                             .parse()
                             .unwrap(),
                         vout: 0,
                     },
-                    script_sig: ScriptBuf::new(),
+                    script_sig: ScriptSigBuf::new(),
                     sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
                     witness: Witness::default(),
                 }],
-                output: vec![
+                outputs: vec![
                     TxOut {
-                        value: Amount::from_sat_u32(99_999_699),
-                        script_pubkey: ScriptBuf::from_hex_no_length_prefix(
+                        amount: Amount::from_sat_u32(99_999_699),
+                        script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(
                             "76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac",
                         )
                         .unwrap(),
                     },
                     TxOut {
-                        value: Amount::from_sat_u32(100_000_000),
-                        script_pubkey: ScriptBuf::from_hex_no_length_prefix(
+                        amount: Amount::from_sat_u32(100_000_000),
+                        script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(
                             "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787",
                         )
                         .unwrap(),
@@ -1607,14 +1617,14 @@ mod tests {
         let tx = Transaction {
             version: transaction::Version::ONE,
             lock_time: absolute::LockTime::ZERO,
-            input: vec![TxIn {
+            inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389"
                         .parse()
                         .unwrap(),
                     vout: 1,
                 },
-                script_sig: ScriptBuf::from_hex_no_length_prefix(
+                script_sig: ScriptSigBuf::from_hex_no_length_prefix(
                     "160014be18d152a9b012039daf3da7de4f53349eecb985",
                 )
                 .unwrap(),
@@ -1623,9 +1633,9 @@ mod tests {
                     "03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105"
                 )]),
             }],
-            output: vec![TxOut {
-                value: Amount::from_sat(190_303_501_938).unwrap(),
-                script_pubkey: ScriptBuf::from_hex_no_length_prefix(
+            outputs: vec![TxOut {
+                amount: Amount::from_sat(190_303_501_938).unwrap(),
+                script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix(
                     "a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587",
                 )
                 .unwrap(),
@@ -1664,9 +1674,9 @@ mod tests {
             },
             unsigned_tx: {
                 let mut unsigned = tx.clone();
-                unsigned.input[0].previous_output.txid = tx.compute_txid();
-                unsigned.input[0].script_sig = ScriptBuf::new();
-                unsigned.input[0].witness = Witness::default();
+                unsigned.inputs[0].previous_output.txid = tx.compute_txid();
+                unsigned.inputs[0].script_sig = ScriptSigBuf::new();
+                unsigned.inputs[0].witness = Witness::default();
                 unsigned
             },
             proprietary: proprietary.clone(),
@@ -1676,8 +1686,8 @@ mod tests {
                 Input {
                     non_witness_utxo: Some(tx),
                     witness_utxo: Some(TxOut {
-                        value: Amount::from_sat(190_303_501_938).unwrap(),
-                        script_pubkey: ScriptBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
+                        amount: Amount::from_sat(190_303_501_938).unwrap(),
+                        script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
                     }),
                     sighash_type: Some("SIGHASH_SINGLE|SIGHASH_ANYONECANPAY".parse::<PsbtSighashType>().unwrap()),
                     redeem_script: Some(vec![0x51].into()),
@@ -1788,25 +1798,25 @@ mod tests {
                 unsigned_tx: Transaction {
                     version: transaction::Version::TWO,
                     lock_time: absolute::LockTime::from_consensus(1257139),
-                    input: vec![
+                    inputs: vec![
                         TxIn {
                             previous_output: OutPoint {
                                 txid: "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126".parse().unwrap(),
                                 vout: 0,
                             },
-                            script_sig: ScriptBuf::new(),
+                            script_sig: ScriptSigBuf::new(),
                             sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
                             witness: Witness::default(),
                         }
                     ],
-                    output: vec![
+                    outputs: vec![
                         TxOut {
-                            value: Amount::from_sat_u32(99_999_699),
-                            script_pubkey: ScriptBuf::from_hex_no_length_prefix("76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac").unwrap(),
+                            amount: Amount::from_sat_u32(99_999_699),
+                            script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac").unwrap(),
                         },
                         TxOut {
-                            value: Amount::from_sat_u32(100_000_000),
-                            script_pubkey: ScriptBuf::from_hex_no_length_prefix("a9143545e6e33b832c47050f24d3eeb93c9c03948bc787").unwrap(),
+                            amount: Amount::from_sat_u32(100_000_000),
+                            script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("a9143545e6e33b832c47050f24d3eeb93c9c03948bc787").unwrap(),
                         },
                     ],
                 },
@@ -1820,13 +1830,13 @@ mod tests {
                         non_witness_utxo: Some(Transaction {
                             version: transaction::Version::ONE,
                             lock_time: absolute::LockTime::ZERO,
-                            input: vec![
+                            inputs: vec![
                                 TxIn {
                                     previous_output: OutPoint {
                                         txid: "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389".parse().unwrap(),
                                         vout: 1,
                                     },
-                                    script_sig: ScriptBuf::from_hex_no_length_prefix("160014be18d152a9b012039daf3da7de4f53349eecb985").unwrap(),
+                                    script_sig: ScriptSigBuf::from_hex_no_length_prefix("160014be18d152a9b012039daf3da7de4f53349eecb985").unwrap(),
                                     sequence: Sequence::MAX,
                                     witness: Witness::from_slice(&[
                                         hex!("304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c01").as_slice(),
@@ -1838,7 +1848,7 @@ mod tests {
                                         txid: "b490486aec3ae671012dddb2bb08466bef37720a533a894814ff1da743aaf886".parse().unwrap(),
                                         vout: 1,
                                     },
-                                    script_sig: ScriptBuf::from_hex_no_length_prefix("160014fe3e9ef1a745e974d902c4355943abcb34bd5353").unwrap(),
+                                    script_sig: ScriptSigBuf::from_hex_no_length_prefix("160014fe3e9ef1a745e974d902c4355943abcb34bd5353").unwrap(),
                                     sequence: Sequence::MAX,
                                     witness: Witness::from_slice(&[
                                         hex!("3045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01").as_slice(),
@@ -1846,14 +1856,14 @@ mod tests {
                                     ]),
                                 }
                             ],
-                            output: vec![
+                            outputs: vec![
                                 TxOut {
-                                    value: Amount::from_sat_u32(200_000_000),
-                                    script_pubkey: ScriptBuf::from_hex_no_length_prefix("76a91485cff1097fd9e008bb34af709c62197b38978a4888ac").unwrap(),
+                                    amount: Amount::from_sat_u32(200_000_000),
+                                    script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("76a91485cff1097fd9e008bb34af709c62197b38978a4888ac").unwrap(),
                                 },
                                 TxOut {
-                                    value: Amount::from_sat(190_303_501_938).unwrap(),
-                                    script_pubkey: ScriptBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
+                                    amount: Amount::from_sat(190_303_501_938).unwrap(),
+                                    script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
                                 },
                             ],
                         }),
@@ -1894,7 +1904,7 @@ mod tests {
             assert!(&psbt.inputs[0].final_script_sig.is_some());
 
             let redeem_script = psbt.inputs[1].redeem_script.as_ref().unwrap();
-            let expected_out = ScriptBuf::from_hex_no_length_prefix(
+            let expected_out = ScriptPubKeyBuf::from_hex_no_length_prefix(
                 "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787",
             )
             .unwrap();
@@ -1918,11 +1928,11 @@ mod tests {
             assert_eq!(psbt.inputs.len(), 1);
             assert_eq!(psbt.outputs.len(), 2);
 
-            let tx_input = &psbt.unsigned_tx.input[0];
+            let tx_input = &psbt.unsigned_tx.inputs[0];
             let psbt_non_witness_utxo = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
 
             assert_eq!(tx_input.previous_output.txid, psbt_non_witness_utxo.compute_txid());
-            assert!(psbt_non_witness_utxo.output[tx_input.previous_output.vout as usize]
+            assert!(psbt_non_witness_utxo.outputs[tx_input.previous_output.vout as usize]
                 .script_pubkey
                 .is_p2pkh());
             assert_eq!(
@@ -1942,7 +1952,7 @@ mod tests {
             assert!(&psbt.inputs[1].final_script_sig.is_none());
 
             let redeem_script = psbt.inputs[1].redeem_script.as_ref().unwrap();
-            let expected_out = ScriptBuf::from_hex_no_length_prefix(
+            let expected_out = ScriptPubKeyBuf::from_hex_no_length_prefix(
                 "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787",
             )
             .unwrap();
@@ -1969,7 +1979,7 @@ mod tests {
             assert!(&psbt.inputs[0].final_script_sig.is_none());
 
             let redeem_script = psbt.inputs[0].redeem_script.as_ref().unwrap();
-            let expected_out = ScriptBuf::from_hex_no_length_prefix(
+            let expected_out = ScriptPubKeyBuf::from_hex_no_length_prefix(
                 "a9146345200f68d189e1adc0df1c4d16ea8f14c0dbeb87",
             )
             .unwrap();
@@ -2149,25 +2159,26 @@ mod tests {
             unsigned_tx: Transaction {
                 version: transaction::Version::TWO,
                 lock_time: absolute::LockTime::from_consensus(1257139),
-                input: vec![
+                inputs: vec![
                     TxIn {
                         previous_output: OutPoint {
                             txid: "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126".parse().unwrap(),
                             vout: 0,
                         },
-                        script_sig: ScriptBuf::new(),
+                        script_sig: ScriptSigBuf::new(),
                         sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
                         witness: Witness::default(),
                     }
                 ],
-                output: vec![
+                outputs: vec![
                     TxOut {
-                        value: Amount::from_sat_u32(99_999_699),
-                        script_pubkey: ScriptBuf::from_hex_no_length_prefix("76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac").unwrap(),
+                        amount: Amount::from_sat_u32(99_999_699),
+                        script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac").unwrap(),
                     },
                     TxOut {
-                        value: Amount::from_sat_u32(100_000_000),
-                        script_pubkey: ScriptBuf::from_hex_no_length_prefix("a9143545e6e33b832c47050f24d3eeb93c9c03948bc787").unwrap(),
+
+                        amount: Amount::from_sat_u32(100_000_000),
+                        script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("a9143545e6e33b832c47050f24d3eeb93c9c03948bc787").unwrap(),
                     },
                 ],
             },
@@ -2181,13 +2192,13 @@ mod tests {
                     non_witness_utxo: Some(Transaction {
                         version: transaction::Version::ONE,
                         lock_time: absolute::LockTime::ZERO,
-                        input: vec![
+                        inputs: vec![
                             TxIn {
                                 previous_output: OutPoint {
                                     txid: "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389".parse().unwrap(),
                                     vout: 1,
                                 },
-                                script_sig: ScriptBuf::from_hex_no_length_prefix("160014be18d152a9b012039daf3da7de4f53349eecb985").unwrap(),
+                                script_sig: ScriptSigBuf::from_hex_no_length_prefix("160014be18d152a9b012039daf3da7de4f53349eecb985").unwrap(),
                                 sequence: Sequence::MAX,
                                 witness: Witness::from_slice(&[
                                     hex!("304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c01").as_slice(),
@@ -2199,7 +2210,7 @@ mod tests {
                                     txid: "b490486aec3ae671012dddb2bb08466bef37720a533a894814ff1da743aaf886".parse().unwrap(),
                                     vout: 1,
                                 },
-                                script_sig: ScriptBuf::from_hex_no_length_prefix("160014fe3e9ef1a745e974d902c4355943abcb34bd5353").unwrap(),
+                                script_sig: ScriptSigBuf::from_hex_no_length_prefix("160014fe3e9ef1a745e974d902c4355943abcb34bd5353").unwrap(),
                                 sequence: Sequence::MAX,
                                 witness: Witness::from_slice(&[
                                     hex!("3045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01").as_slice(),
@@ -2207,14 +2218,14 @@ mod tests {
                                 ]),
                             }
                         ],
-                        output: vec![
+                        outputs: vec![
                             TxOut {
-                                value: Amount::from_sat_u32(200_000_000),
-                                script_pubkey: ScriptBuf::from_hex_no_length_prefix("76a91485cff1097fd9e008bb34af709c62197b38978a4888ac").unwrap(),
+                                amount: Amount::from_sat_u32(200_000_000),
+                                script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("76a91485cff1097fd9e008bb34af709c62197b38978a4888ac").unwrap(),
                             },
                             TxOut {
-                                value: Amount::from_sat(190_303_501_938).unwrap(),
-                                script_pubkey: ScriptBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
+                                amount: Amount::from_sat(190_303_501_938).unwrap(),
+                                script_pubkey: ScriptPubKeyBuf::from_hex_no_length_prefix("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587").unwrap(),
                             },
                         ],
                     }),
@@ -2236,7 +2247,7 @@ mod tests {
         let rtt = hex_psbt(&unserialized.serialize_hex()).unwrap();
         assert_eq!(rtt, unserialized);
 
-        // Now add an ripemd160 with incorrect preimage
+        // Now add a ripemd160 with incorrect preimage
         let mut ripemd160_preimages = BTreeMap::new();
         ripemd160_preimages.insert(ripemd160::Hash::hash(&[17u8]), vec![18u8]);
         unserialized.inputs[0].ripemd160_preimages = ripemd160_preimages;
@@ -2258,7 +2269,7 @@ mod tests {
         assert!(!rtt.proprietary.is_empty());
     }
 
-    // Deserialize MuSig2 PSBT participant keys according to BIP-373
+    // Deserialize MuSig2 PSBT participant keys according to BIP-0373
     #[test]
     fn serialize_and_deserialize_musig2_participants() {
         // XXX: Does not cover PSBT_IN_MUSIG2_PUB_NONCE, PSBT_IN_MUSIG2_PARTIAL_SIG (yet)
@@ -2432,7 +2443,7 @@ mod tests {
         let derived_xpriv = parent_xpriv.derive_xpriv(&secp, &path_prefix).unwrap();
 
         let derived_key = derived_xpriv
-            .get_key(&KeyRequest::Bip32((parent_xpriv.fingerprint(&secp), path.clone())), &secp)
+            .get_key(&KeyRequest::Bip32((parent_xpriv.fingerprint(&secp), path)), &secp)
             .unwrap();
 
         assert_eq!(derived_key, Some(expected_private_key));
@@ -2448,7 +2459,7 @@ mod tests {
             unsigned_tx: Transaction {
                 version: transaction::Version::TWO,
                 lock_time: absolute::LockTime::from_consensus(1257139),
-                input: vec![
+                inputs: vec![
                     TxIn {
                         previous_output: OutPoint {
                             txid: "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126".parse().unwrap(),
@@ -2458,14 +2469,14 @@ mod tests {
                         ..TxIn::EMPTY_COINBASE
                     }
                 ],
-                output: vec![
+                outputs: vec![
                     TxOut {
-                        value: output_0_val,
-                        script_pubkey:  ScriptBuf::new()
+                        amount: output_0_val,
+                        script_pubkey: ScriptPubKeyBuf::new()
                     },
                     TxOut {
-                        value: output_1_val,
-                        script_pubkey:  ScriptBuf::new()
+                        amount: output_1_val,
+                        script_pubkey: ScriptPubKeyBuf::new()
                     },
                 ],
             },
@@ -2479,7 +2490,7 @@ mod tests {
                     non_witness_utxo: Some(Transaction {
                         version: transaction::Version::ONE,
                         lock_time: absolute::LockTime::ZERO,
-                        input: vec![
+                        inputs: vec![
                             TxIn {
                                 previous_output: OutPoint {
                                     txid: "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389".parse().unwrap(),
@@ -2497,14 +2508,14 @@ mod tests {
                                 ..TxIn::EMPTY_COINBASE
                             }
                         ],
-                        output: vec![
+                        outputs: vec![
                             TxOut {
-                                value: prev_output_val,
-                                script_pubkey:  ScriptBuf::new()
+                                amount: prev_output_val,
+                                script_pubkey:  ScriptPubKeyBuf::new()
                             },
                             TxOut {
-                                value: Amount::from_sat(190_303_501_938).unwrap(),
-                                script_pubkey:  ScriptBuf::new()
+                                amount: Amount::from_sat(190_303_501_938).unwrap(),
+                                script_pubkey:  ScriptPubKeyBuf::new()
                             },
                         ],
                     }),
@@ -2533,7 +2544,7 @@ mod tests {
         }
         //  negative fee
         let mut t3 = t.clone();
-        t3.unsigned_tx.output[0].value = prev_output_val;
+        t3.unsigned_tx.outputs[0].amount = prev_output_val;
         match t3.fee().unwrap_err() {
             Error::NegativeFee => {}
             e => panic!("unexpected error: {:?}", e),
@@ -2549,15 +2560,15 @@ mod tests {
         let tx = Transaction {
             version: transaction::Version::TWO,
             lock_time: locktime::absolute::LockTime::ZERO,
-            input: vec![TxIn::EMPTY_COINBASE],
-            output: vec![TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new() }],
+            inputs: vec![TxIn::EMPTY_COINBASE],
+            outputs: vec![TxOut { amount: Amount::ZERO, script_pubkey: ScriptPubKeyBuf::new() }],
         };
 
         let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
         psbt.inputs[0].tap_internal_key = Some(internal_key);
         psbt.inputs[0].witness_utxo = Some(transaction::TxOut {
-            value: Amount::from_sat_u32(10),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            amount: Amount::from_sat_u32(10),
+            script_pubkey: ScriptPubKeyBuf::new_p2tr(&secp, internal_key, None),
         });
 
         let mut key_map: HashMap<PublicKey, PrivateKey> = HashMap::new();
@@ -2582,15 +2593,15 @@ mod tests {
         let tx = Transaction {
             version: transaction::Version::TWO,
             lock_time: locktime::absolute::LockTime::ZERO,
-            input: vec![TxIn::EMPTY_COINBASE],
-            output: vec![TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new() }],
+            inputs: vec![TxIn::EMPTY_COINBASE],
+            outputs: vec![TxOut { amount: Amount::ZERO, script_pubkey: ScriptPubKeyBuf::new() }],
         };
 
         let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
         psbt.inputs[0].tap_internal_key = Some(internal_key);
         psbt.inputs[0].witness_utxo = Some(transaction::TxOut {
-            value: Amount::from_sat_u32(10),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            amount: Amount::from_sat_u32(10),
+            script_pubkey: ScriptPubKeyBuf::new_p2tr(&secp, internal_key, None),
         });
 
         let mut xonly_key_map: HashMap<XOnlyPublicKey, PrivateKey> = HashMap::new();
@@ -2612,22 +2623,23 @@ mod tests {
         let unsigned_tx = Transaction {
             version: transaction::Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input: vec![TxIn::EMPTY_COINBASE, TxIn::EMPTY_COINBASE],
-            output: vec![TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new() }],
+            inputs: vec![TxIn::EMPTY_COINBASE, TxIn::EMPTY_COINBASE],
+
+            outputs: vec![TxOut { amount: Amount::ZERO, script_pubkey: ScriptPubKeyBuf::new() }],
         };
         let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).unwrap();
 
         let (priv_key, pk, secp) = gen_keys();
 
         // key_map implements `GetKey` using KeyRequest::Pubkey. A pubkey key request does not use
-        // keysource so we use default `KeySource` (fingreprint and derivation path) below.
+        // keysource so we use default `KeySource` (fingerprint and derivation path) below.
         let mut key_map = BTreeMap::new();
         key_map.insert(pk, priv_key);
 
         // First input we can spend. See comment above on key_map for why we use defaults here.
         let txout_wpkh = TxOut {
-            value: Amount::from_sat_u32(10),
-            script_pubkey: ScriptBuf::new_p2wpkh(pk.wpubkey_hash().unwrap()),
+            amount: Amount::from_sat_u32(10),
+            script_pubkey: ScriptPubKeyBuf::new_p2wpkh(pk.wpubkey_hash().unwrap()),
         };
         psbt.inputs[0].witness_utxo = Some(txout_wpkh);
 
@@ -2638,8 +2650,8 @@ mod tests {
         // Second input is unspendable by us e.g., from another wallet that supports future upgrades.
         let unknown_prog = WitnessProgram::new(WitnessVersion::V4, &[0xaa; 34]).unwrap();
         let txout_unknown_future = TxOut {
-            value: Amount::from_sat_u32(10),
-            script_pubkey: ScriptBuf::new_witness_program(&unknown_prog),
+            amount: Amount::from_sat_u32(10),
+            script_pubkey: ScriptPubKeyBuf::new_witness_program(&unknown_prog),
         };
         psbt.inputs[1].witness_utxo = Some(txout_unknown_future);
 

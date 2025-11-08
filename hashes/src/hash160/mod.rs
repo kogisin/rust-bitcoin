@@ -23,7 +23,7 @@ impl Hash {
 
         let mut ret = [0; 20];
         ret.copy_from_slice(rmd.as_byte_array());
-        Hash(ret)
+        Self(ret)
     }
 }
 
@@ -128,42 +128,5 @@ mod tests {
         let hash = hash160::Hash::from_byte_array(HASH_BYTES);
         assert_tokens(&hash.compact(), &[Token::BorrowedBytes(&HASH_BYTES[..])]);
         assert_tokens(&hash.readable(), &[Token::Str("132072df690933835eb8b6ad0b77e7b6f14acad7")]);
-    }
-}
-
-#[cfg(bench)]
-mod benches {
-    use test::Bencher;
-
-    use crate::{hash160, Hash as _, HashEngine};
-
-    #[bench]
-    pub fn hash160_10(bh: &mut Bencher) {
-        let mut engine = hash160::Hash::engine();
-        let bytes = [1u8; 10];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn hash160_1k(bh: &mut Bencher) {
-        let mut engine = hash160::Hash::engine();
-        let bytes = [1u8; 1024];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
-    }
-
-    #[bench]
-    pub fn hash160_64k(bh: &mut Bencher) {
-        let mut engine = hash160::Hash::engine();
-        let bytes = [1u8; 65536];
-        bh.iter(|| {
-            engine.input(&bytes);
-        });
-        bh.bytes = bytes.len() as u64;
     }
 }

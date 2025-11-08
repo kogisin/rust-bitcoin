@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! BIP152 Compact Blocks.
+//! BIP-0152 Compact Blocks.
 //!
 //! Implementation of compact blocks data structure and algorithms.
 
@@ -17,14 +17,12 @@ use internals::ToU64 as _;
 use io::{BufRead, Write};
 
 use crate::consensus::encode::{self, Decodable, Encodable, ReadExt, WriteExt};
-use crate::internal_macros::{
-    impl_array_newtype, impl_array_newtype_stringify, impl_consensus_encoding,
-};
+use crate::internal_macros::{self, impl_array_newtype, impl_array_newtype_stringify};
 use crate::prelude::Vec;
 use crate::transaction::TxIdentifier;
 use crate::{block, consensus, Block, BlockChecked, BlockHash, Transaction};
 
-/// A BIP-152 error
+/// A BIP-0152 error
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -41,8 +39,8 @@ impl From<Infallible> for Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::UnknownVersion => write!(f, "an unknown version number was used"),
-            Error::InvalidPrefill => write!(f, "the prefill slice provided was invalid"),
+            Self::UnknownVersion => write!(f, "an unknown version number was used"),
+            Self::InvalidPrefill => write!(f, "the prefill slice provided was invalid"),
         }
     }
 }
@@ -93,10 +91,10 @@ impl Decodable for PrefilledTransaction {
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
         let idx = r.read_compact_size()?;
         let idx = u16::try_from(idx).map_err(|_| {
-            consensus::parse_failed_error("BIP152 prefilled tx index out of bounds")
+            consensus::parse_failed_error("BIP-0152 prefilled tx index out of bounds")
         })?;
         let tx = Transaction::consensus_decode(r)?;
-        Ok(PrefilledTransaction { idx, tx })
+        Ok(Self { idx, tx })
     }
 }
 
@@ -126,13 +124,13 @@ impl ShortId {
     }
 
     /// Calculates the short ID with the given (w)txid and using the provided SipHash keys.
-    pub fn with_siphash_keys<T: TxIdentifier>(txid: &T, siphash_keys: (u64, u64)) -> ShortId {
+    pub fn with_siphash_keys<T: TxIdentifier>(txid: &T, siphash_keys: (u64, u64)) -> Self {
         // 2. Running SipHash-2-4 with the input being the transaction ID and the keys (k0/k1)
         // set to the first two little-endian 64-bit integers from the above hash, respectively.
         let hash = siphash24::Hash::hash_with_keys(siphash_keys.0, siphash_keys.1, txid.as_ref());
 
         // 3. Dropping the 2 most significant bytes from the SipHash output to make it 6 bytes.
-        let mut id = ShortId([0; 6]);
+        let mut id = Self([0; 6]);
         id.0.copy_from_slice(&hash.as_byte_array()[0..6]);
         id
     }
@@ -147,8 +145,8 @@ impl Encodable for ShortId {
 
 impl Decodable for ShortId {
     #[inline]
-    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<ShortId, encode::Error> {
-        Ok(ShortId(Decodable::consensus_decode(r)?))
+    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
+        Ok(Self(Decodable::consensus_decode(r)?))
     }
 }
 
@@ -173,7 +171,7 @@ pub struct HeaderAndShortIds {
 
 impl Decodable for HeaderAndShortIds {
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-        let header_short_ids = HeaderAndShortIds {
+        let header_short_ids = Self {
             header: Decodable::consensus_decode(r)?,
             nonce: Decodable::consensus_decode(r)?,
             short_ids: Decodable::consensus_decode(r)?,
@@ -213,7 +211,7 @@ impl HeaderAndShortIds {
         nonce: u64,
         version: u32,
         mut prefill: &[usize],
-    ) -> Result<HeaderAndShortIds, Error> {
+    ) -> Result<Self, Error> {
         if version != 1 && version != 2 {
             return Err(Error::UnknownVersion);
         }
@@ -242,13 +240,13 @@ impl HeaderAndShortIds {
                         1 => {
                             // strip witness for version 1
                             let mut no_witness = tx.clone();
-                            no_witness.input.iter_mut().for_each(|i| i.witness.clear());
+                            no_witness.inputs.iter_mut().for_each(|i| i.witness.clear());
                             no_witness
                         }
                         // > Transactions inside cmpctblock messages (both those used as direct
                         // > announcement and those in response to getdata) and in blocktxn should
                         // > include witness data, using the same format as responses to getdata
-                        // > MSG_WITNESS_TX, specified in BIP144.
+                        // > MSG_WITNESS_TX, specified in BIP-0144.
                         2 => tx.clone(),
                         _ => unreachable!(),
                     },
@@ -268,7 +266,7 @@ impl HeaderAndShortIds {
             return Err(Error::InvalidPrefill);
         }
 
-        Ok(HeaderAndShortIds {
+        Ok(Self {
             header: *block.header(),
             nonce,
             // Provide coinbase prefilled.
@@ -291,13 +289,9 @@ pub struct BlockTransactionsRequest {
 }
 
 impl Encodable for BlockTransactionsRequest {
-    /// # Panics
-    ///
-    /// Panics if the index overflows [`u64::MAX`]. This happens when [`BlockTransactionsRequest::indexes`]
-    /// contains an entry with the value [`u64::MAX`] as `u64` overflows during differential encoding.
     fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
         let mut len = self.block_hash.consensus_encode(w)?;
-        // Manually encode indexes because they are differentially encoded VarInts.
+        // Manually encode indexes because they are differentially encoded as CompactSize.
         len += w.emit_compact_size(self.indexes.len())?;
         let mut last_idx = 0;
         for idx in &self.indexes {
@@ -310,10 +304,10 @@ impl Encodable for BlockTransactionsRequest {
 
 impl Decodable for BlockTransactionsRequest {
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-        Ok(BlockTransactionsRequest {
+        Ok(Self {
             block_hash: BlockHash::consensus_decode(r)?,
             indexes: {
-                // Manually decode indexes because they are differentially encoded VarInts.
+                // Manually decode indexes because they are differentially encoded as CompactSize.
                 let nb_indexes = r.read_compact_size()? as usize;
 
                 // Since the number of indices ultimately represent transactions,
@@ -381,7 +375,7 @@ pub struct BlockTransactions {
     ///  The transactions provided.
     pub transactions: Vec<Transaction>,
 }
-impl_consensus_encoding!(BlockTransactions, block_hash, transactions);
+internal_macros::impl_consensus_encoding!(BlockTransactions, block_hash, transactions);
 
 impl BlockTransactions {
     /// Constructs a new [`BlockTransactions`] from a [`BlockTransactionsRequest`] and
@@ -389,8 +383,8 @@ impl BlockTransactions {
     pub fn from_request(
         request: &BlockTransactionsRequest,
         block: &Block<BlockChecked>,
-    ) -> Result<BlockTransactions, TxIndexOutOfRangeError> {
-        Ok(BlockTransactions {
+    ) -> Result<Self, TxIndexOutOfRangeError> {
+        Ok(Self {
             block_hash: request.block_hash,
             transactions: {
                 let mut txs = Vec::with_capacity(request.indexes.len());
@@ -409,21 +403,21 @@ impl BlockTransactions {
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for ShortId {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(ShortId(u.arbitrary()?))
+        Ok(Self(u.arbitrary()?))
     }
 }
 
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for PrefilledTransaction {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(PrefilledTransaction { idx: u.arbitrary()?, tx: u.arbitrary()? })
+        Ok(Self { idx: u.arbitrary()?, tx: u.arbitrary()? })
     }
 }
 
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for HeaderAndShortIds {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(HeaderAndShortIds {
+        Ok(Self {
             header: u.arbitrary()?,
             nonce: u.arbitrary()?,
             short_ids: Vec::<ShortId>::arbitrary(u)?,
@@ -435,14 +429,20 @@ impl<'a> Arbitrary<'a> for HeaderAndShortIds {
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for BlockTransactions {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(BlockTransactions { block_hash: u.arbitrary()?, transactions: Vec::<Transaction>::arbitrary(u)? })
+        Ok(Self {
+            block_hash: u.arbitrary()?,
+            transactions: Vec::<Transaction>::arbitrary(u)?,
+        })
     }
 }
 
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for BlockTransactionsRequest {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(BlockTransactionsRequest { block_hash: u.arbitrary()?, indexes: Vec::<u64>::arbitrary(u)? })
+        Ok(Self {
+            block_hash: u.arbitrary()?,
+            indexes: Vec::<u64>::arbitrary(u)?,
+        })
     }
 }
 
@@ -456,8 +456,8 @@ mod test {
     use crate::merkle_tree::TxMerkleNode;
     use crate::transaction::OutPointExt;
     use crate::{
-        transaction, Amount, BlockChecked, BlockTime, CompactTarget, OutPoint, ScriptBuf, Sequence,
-        TxIn, TxOut, Txid, Witness,
+        transaction, Amount, BlockChecked, BlockTime, CompactTarget, OutPoint, ScriptPubKeyBuf,
+        ScriptSigBuf, Sequence, TxIn, TxOut, Txid, Witness,
     };
 
     fn dummy_tx(nonce: &[u8]) -> Transaction {
@@ -465,13 +465,13 @@ mod test {
         Transaction {
             version: transaction::Version::ONE,
             lock_time: absolute::LockTime::from_consensus(2),
-            input: vec![TxIn {
+            inputs: vec![TxIn {
                 previous_output: OutPoint::new(dummy_txid, 0),
-                script_sig: ScriptBuf::new(),
+                script_sig: ScriptSigBuf::new(),
                 sequence: Sequence(1),
                 witness: Witness::new(),
             }],
-            output: vec![TxOut { value: Amount::ONE_SAT, script_pubkey: ScriptBuf::new() }],
+            outputs: vec![TxOut { amount: Amount::ONE_SAT, script_pubkey: ScriptPubKeyBuf::new() }],
         }
     }
 
@@ -526,21 +526,21 @@ mod test {
     #[test]
     fn getblocktx_differential_encoding_de_and_serialization() {
         let testcases = vec![
-            // differentially encoded VarInts, indices
+            // differentially encoded CompactSizes, indices
             (vec![4, 0, 5, 1, 10], vec![0, 6, 8, 19]),
             (vec![1, 0], vec![0]),
             (vec![5, 0, 0, 0, 0, 0], vec![0, 1, 2, 3, 4]),
             (vec![3, 1, 1, 1], vec![1, 3, 5]),
-            (vec![3, 0, 0, 253, 0, 1], vec![0, 1, 258]), // .., 253, 0, 1] == VarInt(256)
+            (vec![3, 0, 0, 253, 0, 1], vec![0, 1, 258]), // .., 253, 0, 1] == CompactSize(256)
         ];
         let deser_errorcases = vec![
-            vec![2, 255, 254, 255, 255, 255, 255, 255, 255, 255, 0], // .., 255, 254, .., 255] == VarInt(u64::MAX-1)
-            vec![1, 255, 255, 255, 255, 255, 255, 255, 255, 255], // .., 255, 255, .., 255] == VarInt(u64::MAX)
+            vec![2, 255, 254, 255, 255, 255, 255, 255, 255, 255, 0], // .., 255, 254, .., 255] == CompactSize(u64::MAX-1)
+            vec![1, 255, 255, 255, 255, 255, 255, 255, 255, 255], // .., 255, 255, .., 255] == CompactSize(u64::MAX)
         ];
         for testcase in testcases {
             {
                 // test deserialization
-                let mut raw: Vec<u8> = [0u8; 32].to_vec();
+                let mut raw: Vec<u8> = vec![0u8; 32];
                 raw.extend(testcase.0.clone());
                 let btr: BlockTransactionsRequest = deserialize(&raw.to_vec()).unwrap();
                 assert_eq!(testcase.1, btr.indexes);

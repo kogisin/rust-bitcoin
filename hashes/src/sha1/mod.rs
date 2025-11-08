@@ -3,11 +3,8 @@
 //! SHA1 implementation.
 
 use internals::slice::SliceExt;
-
-#[cfg(bench)]
-mod benches;
 mod crypto;
-#[cfg(bench)]
+#[cfg(test)]
 mod tests;
 
 use core::cmp;
@@ -38,7 +35,7 @@ impl Hash {
         e.input(&(8 * n_bytes_hashed).to_be_bytes());
         debug_assert_eq!(incomplete_block_len(&e), 0);
 
-        Hash(e.midstate())
+        Self(e.midstate())
     }
 }
 

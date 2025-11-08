@@ -1,11 +1,11 @@
-//! The segregated witness program as defined by [BIP141].
+//! The segregated witness program as defined by [BIP-0141].
 //!
-//! > A scriptPubKey (or redeemScript as defined in BIP16/P2SH) that consists of a 1-byte push
+//! > A scriptPubKey (or redeemScript as defined in BIP-0016/P2SH) that consists of a 1-byte push
 //! > opcode (for 0 to 16) followed by a data push between 2 and 40 bytes gets a new special
 //! > meaning. The value of the first push is called the "version byte". The following byte
 //! > vector pushed is called the "witness program".
 //!
-//! [BIP141]: <https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki>
+//! [BIP-0141]: <https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki>
 
 use core::convert::Infallible;
 use core::fmt;
@@ -14,9 +14,9 @@ use internals::array_vec::ArrayVec;
 use secp256k1::{Secp256k1, Verification};
 
 use super::witness_version::WitnessVersion;
-use super::{PushBytes, Script, WScriptHash, WitnessScriptSizeError};
+use super::{PushBytes, WScriptHash, WitnessScript, WitnessScriptSizeError};
 use crate::crypto::key::{CompressedPublicKey, TapTweak, TweakedPublicKey, UntweakedPublicKey};
-use crate::script::ScriptExt as _;
+use crate::script::WitnessScriptExt as _;
 use crate::taproot::TapNodeHash;
 
 /// The minimum byte size of a segregated witness program.
@@ -57,43 +57,43 @@ impl WitnessProgram {
         }
 
         let program = ArrayVec::from_slice(bytes);
-        Ok(WitnessProgram { version, program })
+        Ok(Self { version, program })
     }
 
     /// Constructs a new [`WitnessProgram`] from a 20 byte pubkey hash.
     fn new_p2wpkh(program: [u8; 20]) -> Self {
-        WitnessProgram { version: WitnessVersion::V0, program: ArrayVec::from_slice(&program) }
+        Self { version: WitnessVersion::V0, program: ArrayVec::from_slice(&program) }
     }
 
     /// Constructs a new [`WitnessProgram`] from a 32 byte script hash.
     fn new_p2wsh(program: [u8; 32]) -> Self {
-        WitnessProgram { version: WitnessVersion::V0, program: ArrayVec::from_slice(&program) }
+        Self { version: WitnessVersion::V0, program: ArrayVec::from_slice(&program) }
     }
 
     /// Constructs a new [`WitnessProgram`] from a 32 byte serialized Taproot x-only pubkey.
     fn new_p2tr(program: [u8; 32]) -> Self {
-        WitnessProgram { version: WitnessVersion::V1, program: ArrayVec::from_slice(&program) }
+        Self { version: WitnessVersion::V1, program: ArrayVec::from_slice(&program) }
     }
 
     /// Constructs a new [`WitnessProgram`] from `pk` for a P2WPKH output.
     pub fn p2wpkh(pk: CompressedPublicKey) -> Self {
         let hash = pk.wpubkey_hash();
-        WitnessProgram::new_p2wpkh(hash.to_byte_array())
+        Self::new_p2wpkh(hash.to_byte_array())
     }
 
     /// Constructs a new [`WitnessProgram`] from `script` for a P2WSH output.
-    pub fn p2wsh(script: &Script) -> Result<Self, WitnessScriptSizeError> {
+    pub fn p2wsh(script: &WitnessScript) -> Result<Self, WitnessScriptSizeError> {
         script.wscript_hash().map(Self::p2wsh_from_hash)
     }
 
     /// Constructs a new [`WitnessProgram`] from `script` for a P2WSH output.
     pub fn p2wsh_from_hash(hash: WScriptHash) -> Self {
-        WitnessProgram::new_p2wsh(hash.to_byte_array())
+        Self::new_p2wsh(hash.to_byte_array())
     }
 
     /// Constructs a new [`WitnessProgram`] from an untweaked key for a P2TR output.
     ///
-    /// This function applies BIP341 key-tweaking to the untweaked
+    /// This function applies BIP-0341 key-tweaking to the untweaked
     /// key using the merkle root, if it's present.
     pub fn p2tr<C: Verification, K: Into<UntweakedPublicKey>>(
         secp: &Secp256k1<C>,
@@ -103,18 +103,18 @@ impl WitnessProgram {
         let internal_key = internal_key.into();
         let (output_key, _parity) = internal_key.tap_tweak(secp, merkle_root);
         let pubkey = output_key.as_x_only_public_key().serialize();
-        WitnessProgram::new_p2tr(pubkey)
+        Self::new_p2tr(pubkey)
     }
 
     /// Constructs a new [`WitnessProgram`] from a tweaked key for a P2TR output.
     pub fn p2tr_tweaked(output_key: TweakedPublicKey) -> Self {
         let pubkey = output_key.as_x_only_public_key().serialize();
-        WitnessProgram::new_p2tr(pubkey)
+        Self::new_p2tr(pubkey)
     }
 
     /// Constructs a new [`WitnessProgram`] for a P2A output.
     pub const fn p2a() -> Self {
-        WitnessProgram { version: WitnessVersion::V1, program: ArrayVec::from_slice(&P2A_PROGRAM) }
+        Self { version: WitnessVersion::V1, program: ArrayVec::from_slice(&P2A_PROGRAM) }
     }
 
     /// Returns the witness program version.
@@ -133,7 +133,7 @@ impl WitnessProgram {
         self.version == WitnessVersion::V0 && self.program.len() == 20
     }
 
-    /// Returns true if this witness program is for a P2WPSH output.
+    /// Returns true if this witness program is for a P2WSH output.
     pub fn is_p2wsh(&self) -> bool {
         self.version == WitnessVersion::V0 && self.program.len() == 32
     }

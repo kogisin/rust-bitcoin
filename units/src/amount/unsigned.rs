@@ -9,14 +9,18 @@ use core::{default, fmt};
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+use internals::const_casts;
 use NumOpResult as R;
 
+#[cfg(feature = "encoding")]
+use super::error::AmountDecoderError;
 use super::error::{ParseAmountErrorInner, ParseErrorInner};
 use super::{
     parse_signed_to_satoshi, split_amount_and_denomination, Denomination, Display, DisplayStyle,
     OutOfRangeError, ParseAmountError, ParseError, SignedAmount,
 };
-use crate::{FeeRate, MathOp, NumOpError as E, NumOpResult, Weight};
+use crate::result::{MathOp, NumOpError as E, NumOpResult};
+use crate::{FeeRate, Weight};
 
 mod encapsulate {
     use super::OutOfRangeError;
@@ -116,7 +120,7 @@ impl Amount {
     /// represent roughly 0 to 42.95 BTC.
     #[allow(clippy::missing_panics_doc)]
     pub const fn from_sat_u32(satoshi: u32) -> Self {
-        let sats = satoshi as u64; // cannot use i64::from in a constfn
+        let sats = const_casts::u32_to_u64(satoshi);
         match Self::from_sat(sats) {
             Ok(amount) => amount,
             Err(_) => panic!("unreachable - 65,536 BTC is within range"),
@@ -154,7 +158,7 @@ impl Amount {
     /// in const context.
     #[allow(clippy::missing_panics_doc)]
     pub const fn from_btc_u16(whole_bitcoin: u16) -> Self {
-        let btc = whole_bitcoin as u64; // Can't call `into` in const context.
+        let btc = const_casts::u16_to_u64(whole_bitcoin);
         let sats = btc * 100_000_000;
 
         match Self::from_sat(sats) {
@@ -406,6 +410,16 @@ impl Amount {
             .expect("range of Amount is within range of SignedAmount")
     }
 
+    /// Infallibly subtracts one `Amount` from another returning a [`SignedAmount`].
+    ///
+    /// Since `SignedAmount::MIN` is equivalent to `-Amount::MAX` subtraction of two signed amounts
+    /// can never overflow a `SignedAmount`.
+    #[must_use]
+    pub fn signed_sub(self, rhs: Self) -> SignedAmount {
+        (self.to_signed() - rhs.to_signed())
+            .expect("difference of two amounts is always within SignedAmount range")
+    }
+
     /// Checked weight floor division.
     ///
     /// Be aware that integer division loses the remainder if no exact division
@@ -417,7 +431,7 @@ impl Amount {
         if let Some(sats) = self.to_sat().checked_mul(1_000) {
             match sats.checked_div(wu) {
                 Some(fee_rate) =>
-                    if let Ok(amount) = Amount::from_sat(fee_rate) {
+                    if let Ok(amount) = Self::from_sat(fee_rate) {
                         return FeeRate::from_per_kwu(amount);
                     },
                 None => return R::Error(E::while_doing(MathOp::Div)),
@@ -451,10 +465,10 @@ impl Amount {
 
         // Mul by 1,000 because we use per/kwu.
         if let Some(sats) = self.to_sat().checked_mul(1_000) {
-            // No need to used checked arithmetic because wu is non-zero.
+            // No need to use checked arithmetic because wu is non-zero.
             if let Some(bump) = sats.checked_add(wu - 1) {
                 let fee_rate = bump / wu;
-                if let Ok(amount) = Amount::from_sat(fee_rate) {
+                if let Ok(amount) = Self::from_sat(fee_rate) {
                     return FeeRate::from_per_kwu(amount);
                 }
             }
@@ -469,7 +483,7 @@ impl Amount {
     /// at the given `fee_rate`. Uses floor division to ensure the resulting weight doesn't cause
     /// the fee to exceed the amount.
     pub const fn div_by_fee_rate_floor(self, fee_rate: FeeRate) -> NumOpResult<Weight> {
-        debug_assert!(Amount::MAX.to_sat().checked_mul(1_000).is_some());
+        debug_assert!(Self::MAX.to_sat().checked_mul(1_000).is_some());
         let msats = self.to_sat() * 1_000;
         match msats.checked_div(fee_rate.to_sat_per_kwu_ceil()) {
             Some(wu) => R::Valid(Weight::from_wu(wu)),
@@ -489,7 +503,7 @@ impl Amount {
             return R::Error(E::while_doing(MathOp::Div));
         }
 
-        debug_assert!(Amount::MAX.to_sat().checked_mul(1_000).is_some());
+        debug_assert!(Self::MAX.to_sat().checked_mul(1_000).is_some());
         let msats = self.to_sat() * 1_000;
         match msats.checked_add(rate - 1) {
             Some(bump) => {
@@ -548,6 +562,61 @@ impl TryFrom<SignedAmount> for Amount {
     type Error = OutOfRangeError;
 
     fn try_from(value: SignedAmount) -> Result<Self, Self::Error> { value.to_unsigned() }
+}
+
+#[cfg(feature = "encoding")]
+encoding::encoder_newtype! {
+    /// The encoder for the [`Amount`] type.
+    pub struct AmountEncoder(encoding::ArrayEncoder<8>);
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Encodable for Amount {
+    type Encoder<'e> = AmountEncoder;
+    fn encoder(&self) -> Self::Encoder<'_> {
+        AmountEncoder(encoding::ArrayEncoder::without_length_prefix(self.to_sat().to_le_bytes()))
+    }
+}
+
+/// The decoder for the [`Amount`] type.
+#[cfg(feature = "encoding")]
+pub struct AmountDecoder(encoding::ArrayDecoder<8>);
+
+#[cfg(feature = "encoding")]
+impl AmountDecoder {
+    /// Constructs a new [`Amount`] decoder.
+    pub fn new() -> Self { Self(encoding::ArrayDecoder::new()) }
+}
+
+#[cfg(feature = "encoding")]
+impl Default for AmountDecoder {
+    fn default() -> Self { Self::new() }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decoder for AmountDecoder {
+    type Output = Amount;
+    type Error = AmountDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        self.0.push_bytes(bytes).map_err(AmountDecoderError::eof)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> {
+        let a = u64::from_le_bytes(self.0.end().map_err(AmountDecoderError::eof)?);
+        Amount::from_sat(a).map_err(AmountDecoderError::out_of_range)
+    }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decodable for Amount {
+    type Decoder = AmountDecoder;
+    fn decoder() -> Self::Decoder { AmountDecoder(encoding::ArrayDecoder::<8>::new()) }
 }
 
 #[cfg(feature = "arbitrary")]

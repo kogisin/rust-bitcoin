@@ -20,14 +20,6 @@ targetFileToName() {
     | sed 's/^_//g'
 }
 
-targetFileToHFuzzInputArg() {
-  baseName=$(basename "$1")
-  dirName="${baseName%.*}"
-  if [ -d "hfuzz_input/$dirName" ]; then
-    echo "HFUZZ_INPUT_ARGS=\"-f hfuzz_input/$FILE/input\""
-  fi
-}
-
 listTargetNames() {
   for target in $(listTargetFiles); do
     targetFileToName "$target"
@@ -43,7 +35,7 @@ checkWindowsFiles() {
   fi
 }
 
-# Checks whether a fuzz case output some report, and dumps it in hex
+# Checks whether a fuzz case outputs some report, and dumps it in hex
 checkReport() {
   reportFile="hfuzz_workspace/$1/HONGGFUZZ.REPORT.TXT"
   if [ -f "$reportFile" ]; then

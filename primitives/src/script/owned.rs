@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
+use core::convert::Infallible;
+use core::fmt;
+use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+use encoding::{ByteVecDecoder, ByteVecDecoderError, Decodable, Decoder};
+use internals::write_err;
 
 use super::Script;
 use crate::prelude::{Box, Vec};
@@ -19,17 +24,22 @@ use crate::prelude::{Box, Vec};
 /// # Hexadecimal strings
 ///
 /// Scripts are consensus encoded with a length prefix and as a result of this in some places in the
-/// eccosystem one will encounter hex strings that include the prefix while in other places the
+/// ecosystem one will encounter hex strings that include the prefix while in other places the
 /// prefix is excluded. To support parsing and formatting scripts as hex we provide a bunch of
 /// different APIs and trait implementations. Please see [`examples/script.rs`] for a thorough
 /// example of all the APIs.
 ///
 /// [`examples/script.rs`]: <https://github.com/rust-bitcoin/rust-bitcoin/blob/master/bitcoin/examples/script.rs>
 /// [deref coercions]: https://doc.rust-lang.org/std/ops/trait.Deref.html#more-on-deref-coercion
-#[derive(Default, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub struct ScriptBuf(Vec<u8>);
+///
+/// # Panics
+///
+/// `ScriptBuf` is backed by [`Vec`] and inherits its panic behavior. This means that attempting to
+/// construct scripts larger than `isize::MAX` bytes will panic.
+#[derive(Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct ScriptBuf<T>(PhantomData<T>, Vec<u8>);
 
-impl ScriptBuf {
+impl<T> ScriptBuf<T> {
     /// Constructs a new empty script.
     #[inline]
     pub const fn new() -> Self { Self::from_bytes(Vec::new()) }
@@ -39,15 +49,15 @@ impl ScriptBuf {
     /// This method doesn't (re)allocate. `bytes` is just the script bytes **not** consensus
     /// encoding (i.e no length prefix).
     #[inline]
-    pub const fn from_bytes(bytes: Vec<u8>) -> Self { Self(bytes) }
+    pub const fn from_bytes(bytes: Vec<u8>) -> Self { Self(PhantomData, bytes) }
 
     /// Returns a reference to unsized script.
     #[inline]
-    pub fn as_script(&self) -> &Script { Script::from_bytes(&self.0) }
+    pub fn as_script(&self) -> &Script<T> { Script::from_bytes(&self.1) }
 
     /// Returns a mutable reference to unsized script.
     #[inline]
-    pub fn as_mut_script(&mut self) -> &mut Script { Script::from_bytes_mut(&mut self.0) }
+    pub fn as_mut_script(&mut self) -> &mut Script<T> { Script::from_bytes_mut(&mut self.1) }
 
     /// Converts the script into a byte vector.
     ///
@@ -57,7 +67,7 @@ impl ScriptBuf {
     ///
     /// Just the script bytes **not** consensus encoding (which includes a length prefix).
     #[inline]
-    pub fn into_bytes(self) -> Vec<u8> { self.0 }
+    pub fn into_bytes(self) -> Vec<u8> { self.1 }
 
     /// Converts this `ScriptBuf` into a [boxed](Box) [`Script`].
     ///
@@ -67,15 +77,13 @@ impl ScriptBuf {
     /// reallocation can be avoided.
     #[must_use]
     #[inline]
-    pub fn into_boxed_script(self) -> Box<Script> {
+    pub fn into_boxed_script(self) -> Box<Script<T>> {
         Script::from_boxed_bytes(self.into_bytes().into_boxed_slice())
     }
 
     /// Constructs a new empty script with at least the specified capacity.
     #[inline]
-    pub fn with_capacity(capacity: usize) -> Self {
-        ScriptBuf::from_bytes(Vec::with_capacity(capacity))
-    }
+    pub fn with_capacity(capacity: usize) -> Self { Self::from_bytes(Vec::with_capacity(capacity)) }
 
     /// Pre-allocates at least `additional_len` bytes if needed.
     ///
@@ -88,7 +96,7 @@ impl ScriptBuf {
     ///
     /// Panics if the new capacity exceeds `isize::MAX bytes`.
     #[inline]
-    pub fn reserve(&mut self, additional_len: usize) { self.0.reserve(additional_len); }
+    pub fn reserve(&mut self, additional_len: usize) { self.1.reserve(additional_len); }
 
     /// Pre-allocates exactly `additional_len` bytes if needed.
     ///
@@ -104,13 +112,13 @@ impl ScriptBuf {
     ///
     /// Panics if the new capacity exceeds `isize::MAX bytes`.
     #[inline]
-    pub fn reserve_exact(&mut self, additional_len: usize) { self.0.reserve_exact(additional_len); }
+    pub fn reserve_exact(&mut self, additional_len: usize) { self.1.reserve_exact(additional_len); }
 
     /// Returns the number of **bytes** available for writing without reallocation.
     ///
     /// It is guaranteed that `script.capacity() >= script.len()` always holds.
     #[inline]
-    pub fn capacity(&self) -> usize { self.0.capacity() }
+    pub fn capacity(&self) -> usize { self.1.capacity() }
 
     /// Gets the hex representation of this script.
     ///
@@ -125,29 +133,94 @@ impl ScriptBuf {
     pub fn to_hex(&self) -> alloc::string::String { alloc::format!("{:x}", self) }
 }
 
-impl Deref for ScriptBuf {
-    type Target = Script;
+// Cannot derive due to generics.
+impl<T> Default for ScriptBuf<T> {
+    fn default() -> Self { Self(PhantomData, Vec::new()) }
+}
+
+impl<T> Deref for ScriptBuf<T> {
+    type Target = Script<T>;
 
     #[inline]
     fn deref(&self) -> &Self::Target { self.as_script() }
 }
 
-impl DerefMut for ScriptBuf {
+impl<T> DerefMut for ScriptBuf<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target { self.as_mut_script() }
 }
 
+/// The decoder for the [`ScriptBuf`] type.
+pub struct ScriptBufDecoder<T>(ByteVecDecoder, PhantomData<T>);
+
+impl<T> ScriptBufDecoder<T> {
+    /// Constructs a new [`ScriptBuf`] decoder.
+    pub fn new() -> Self { Self(ByteVecDecoder::new(), PhantomData) }
+}
+
+impl<T> Default for ScriptBufDecoder<T> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<T> Decoder for ScriptBufDecoder<T> {
+    type Output = ScriptBuf<T>;
+    type Error = ScriptBufDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        Ok(self.0.push_bytes(bytes)?)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> { Ok(ScriptBuf::from_bytes(self.0.end()?)) }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+impl<T> Decodable for ScriptBuf<T> {
+    type Decoder = ScriptBufDecoder<T>;
+    fn decoder() -> Self::Decoder { ScriptBufDecoder(ByteVecDecoder::new(), PhantomData) }
+}
+
+/// An error consensus decoding a `ScriptBuf<T>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptBufDecoderError(ByteVecDecoderError);
+
+impl From<Infallible> for ScriptBufDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+impl From<ByteVecDecoderError> for ScriptBufDecoderError {
+    fn from(e: ByteVecDecoderError) -> Self { Self(e) }
+}
+
+impl fmt::Display for ScriptBufDecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write_err!(f, "decoder error"; self.0) }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ScriptBufDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+}
+
 #[cfg(feature = "arbitrary")]
-impl<'a> Arbitrary<'a> for ScriptBuf {
+impl<'a, T> Arbitrary<'a> for ScriptBuf<T> {
     #[inline]
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let v = Vec::<u8>::arbitrary(u)?;
-        Ok(ScriptBuf::from_bytes(v))
+        Ok(Self::from_bytes(v))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    // All tests should compile and pass no matter which script type you put here.
+    type ScriptBuf = super::super::ScriptSigBuf;
+
+    #[cfg(feature = "alloc")]
+    use alloc::vec;
+
     use super::*;
 
     #[test]
@@ -208,5 +281,32 @@ mod tests {
         let mut script = ScriptBuf::new();
         script.reserve_exact(10);
         assert!(script.capacity() >= 10);
+    }
+
+    #[test]
+    fn script_consensus_decode_empty() {
+        let bytes = vec![0_u8];
+        let mut push = bytes.as_slice();
+        let mut decoder = ScriptBuf::decoder();
+        decoder.push_bytes(&mut push).unwrap();
+
+        let got = decoder.end().unwrap();
+        let want = ScriptBuf::new();
+
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn script_consensus_decode_empty_with_more_data() {
+        // An empty script sig with a bunch of unrelated data at the end.
+        let bytes = vec![0x00_u8, 0xff, 0xff, 0xff, 0xff];
+        let mut push = bytes.as_slice();
+        let mut decoder = ScriptBuf::decoder();
+        decoder.push_bytes(&mut push).unwrap();
+
+        let got = decoder.end().unwrap();
+        let want = ScriptBuf::new();
+
+        assert_eq!(got, want);
     }
 }

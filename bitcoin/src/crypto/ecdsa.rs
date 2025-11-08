@@ -17,7 +17,7 @@ use io::Write;
 use crate::prelude::{DisplayHex, Vec};
 use crate::script::PushBytes;
 #[cfg(doc)]
-use crate::script::ScriptBufExt as _;
+use crate::script::ScriptPubKeyBufExt as _;
 use crate::sighash::{EcdsaSighashType, NonStandardSighashTypeError};
 
 const MAX_SIG_LEN: usize = 73;
@@ -34,8 +34,8 @@ pub struct Signature {
 
 impl Signature {
     /// Constructs a new ECDSA Bitcoin signature for [`EcdsaSighashType::All`].
-    pub fn sighash_all(signature: secp256k1::ecdsa::Signature) -> Signature {
-        Signature { signature, sighash_type: EcdsaSighashType::All }
+    pub fn sighash_all(signature: secp256k1::ecdsa::Signature) -> Self {
+        Self { signature, sighash_type: EcdsaSighashType::All }
     }
 
     /// Deserializes from slice following the standardness rules for [`EcdsaSighashType`].
@@ -44,7 +44,7 @@ impl Signature {
         let sighash_type = EcdsaSighashType::from_standard(*sighash_type as u32)?;
         let signature =
             secp256k1::ecdsa::Signature::from_der(sig).map_err(DecodeError::Secp256k1)?;
-        Ok(Signature { signature, sighash_type })
+        Ok(Self { signature, sighash_type })
     }
 
     /// Serializes an ECDSA signature (inner secp256k1 signature in DER format).
@@ -100,8 +100,9 @@ impl FromStr for Signature {
 /// This avoids allocation and allows proving maximum size of the signature (73 bytes).
 /// The type can be used largely as a byte slice. It implements all standard traits one would
 /// expect and has familiar methods.
+///
 /// However, the usual use case is to push it into a script. This can be done directly passing it
-/// into [`push_slice`](crate::script::ScriptBuf::push_slice).
+/// into [`push_slice`](crate::script::ScriptBufExt::push_slice).
 #[derive(Copy, Clone)]
 pub struct SerializedSignature {
     data: [u8; MAX_SIG_LEN],
@@ -185,7 +186,7 @@ impl fmt::UpperHex for SerializedSignature {
 
 impl PartialEq for SerializedSignature {
     #[inline]
-    fn eq(&self, other: &SerializedSignature) -> bool { **self == **other }
+    fn eq(&self, other: &Self) -> bool { **self == **other }
 }
 
 impl Eq for SerializedSignature {}
@@ -199,7 +200,7 @@ impl<'a> IntoIterator for &'a SerializedSignature {
     type Item = &'a u8;
 
     #[inline]
-    fn into_iter(self) -> Self::IntoIter { (*self).iter() }
+    fn into_iter(self) -> Self::IntoIter { (**self).iter() }
 }
 
 /// Error encountered while parsing an ECDSA signature from a byte slice.
@@ -324,7 +325,7 @@ impl<'a> Arbitrary<'a> for Signature {
         signature_bytes[..32].copy_from_slice(&bytes);
         signature_bytes[32..].copy_from_slice(&bytes);
 
-        Ok(Signature {
+        Ok(Self {
             signature: secp256k1::ecdsa::Signature::from_compact(&signature_bytes).unwrap(),
             sighash_type: EcdsaSighashType::arbitrary(u)?,
         })
@@ -335,11 +336,12 @@ impl<'a> Arbitrary<'a> for Signature {
 mod tests {
     use super::*;
 
+    const TEST_SIGNATURE_HEX: &str = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
+
     #[test]
     fn write_serialized_signature() {
-        let hex = "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45";
         let sig = Signature {
-            signature: secp256k1::ecdsa::Signature::from_str(hex).unwrap(),
+            signature: secp256k1::ecdsa::Signature::from_str(TEST_SIGNATURE_HEX).unwrap(),
             sighash_type: EcdsaSighashType::All,
         };
 
@@ -347,5 +349,15 @@ mod tests {
         sig.serialize_to_writer(&mut buf).expect("write failed");
 
         assert_eq!(sig.to_vec(), buf)
+    }
+
+    #[test]
+    fn iterate_serialized_signature() {
+        let sig = Signature {
+            signature: secp256k1::ecdsa::Signature::from_str(TEST_SIGNATURE_HEX).unwrap(),
+            sighash_type: EcdsaSighashType::All,
+        };
+
+        assert_eq!(sig.serialize().iter().copied().collect::<Vec<u8>>(), sig.to_vec());
     }
 }

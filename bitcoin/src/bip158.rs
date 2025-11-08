@@ -13,13 +13,13 @@
 //!
 //! # Relevant BIPS
 //!
-//! * [BIP 157 - Client Side Block Filtering](https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki)
-//! * [BIP 158 - Compact Block Filters for Light Clients](https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki)
+//! * [BIP-0157 - Client Side Block Filtering](https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki)
+//! * [BIP-0158 - Compact Block Filters for Light Clients](https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki)
 //!
 //! # Examples
 //!
 //! ```ignore
-//! fn get_script_for_coin(coin: &OutPoint) -> Result<ScriptBuf, BlockFilterError> {
+//! fn get_script_for_coin(coin: &OutPoint) -> Result<ScriptPubKeyBuf, BlockFilterError> {
 //!   // get utxo ...
 //! }
 //!
@@ -31,7 +31,7 @@
 //!
 //! // read and evaluate a filter
 //!
-//! let query: Iterator<Item=ScriptBuf> = // .. some scripts you care about
+//! let query: Iterator<Item=ScriptPubKeyBuf> = // .. some scripts you care about
 //! if filter.match_any(&block_hash, &mut query.map(|s| s.as_bytes())) {
 //!   // get this block
 //! }
@@ -50,19 +50,19 @@ use io::{BufRead, Write};
 
 use crate::block::{Block, BlockHash, Checked};
 use crate::consensus::{ReadExt, WriteExt};
-use crate::internal_macros::impl_hashencode;
+use crate::internal_macros;
 use crate::prelude::{BTreeSet, Borrow, Vec};
-use crate::script::{Script, ScriptExt as _};
+use crate::script::{ScriptPubKey, ScriptPubKeyExt as _};
 use crate::transaction::OutPoint;
 
-/// Golomb encoding parameter as in BIP-158, see also https://gist.github.com/sipa/576d5f09c3b86c3b1b75598d799fc845
+/// Golomb encoding parameter as in BIP-0158, see also https://gist.github.com/sipa/576d5f09c3b86c3b1b75598d799fc845
 const P: u8 = 19;
 const M: u64 = 784931;
 
 hashes::hash_newtype! {
-    /// Filter hash, as defined in BIP-157.
+    /// Filter hash, as defined in BIP-0157.
     pub struct FilterHash(sha256d::Hash);
-    /// Filter header, as defined in BIP-157.
+    /// Filter header, as defined in BIP-0157.
     pub struct FilterHeader(sha256d::Hash);
 }
 
@@ -70,8 +70,8 @@ hashes::impl_hex_for_newtype!(FilterHash, FilterHeader);
 #[cfg(feature = "serde")]
 hashes::impl_serde_for_newtype!(FilterHash, FilterHeader);
 
-impl_hashencode!(FilterHash);
-impl_hashencode!(FilterHeader);
+internal_macros::impl_hashencode!(FilterHash);
+internal_macros::impl_hashencode!(FilterHeader);
 
 /// Errors for blockfilter.
 #[derive(Debug)]
@@ -111,7 +111,7 @@ impl std::error::Error for Error {
 }
 
 impl From<io::Error> for Error {
-    fn from(io: io::Error) -> Self { Error::Io(io) }
+    fn from(io: io::Error) -> Self { Self::Io(io) }
 }
 
 /// A block filter, as described by BIP 158.
@@ -133,16 +133,16 @@ impl FilterHash {
 
 impl BlockFilter {
     /// Constructs a new filter from pre-computed data.
-    pub fn new(content: &[u8]) -> BlockFilter { BlockFilter { content: content.to_vec() } }
+    pub fn new(content: &[u8]) -> Self { Self { content: content.to_vec() } }
 
     /// Computes a SCRIPT_FILTER that contains spent and output scripts.
     pub fn new_script_filter<M, S>(
         block: &Block<Checked>,
         script_for_coin: M,
-    ) -> Result<BlockFilter, Error>
+    ) -> Result<Self, Error>
     where
         M: Fn(&OutPoint) -> Result<S, Error>,
-        S: Borrow<Script>,
+        S: Borrow<ScriptPubKey>,
     {
         let mut out = Vec::new();
         let mut writer = BlockFilterWriter::new(&mut out, block);
@@ -151,12 +151,12 @@ impl BlockFilter {
         writer.add_input_scripts(script_for_coin)?;
         writer.finish()?;
 
-        Ok(BlockFilter { content: out })
+        Ok(Self { content: out })
     }
 
     /// Computes this filter's ID in a chain of filters (see [BIP 157]).
     ///
-    /// [BIP 157]: <https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki#Filter_Headers>
+    /// [BIP-0157]: <https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki#Filter_Headers>
     pub fn filter_header(&self, previous_filter_header: FilterHeader) -> FilterHeader {
         FilterHash(sha256d::Hash::hash(&self.content)).filter_header(previous_filter_header)
     }
@@ -196,7 +196,7 @@ pub struct BlockFilterWriter<'a, W> {
 
 impl<'a, W: Write> BlockFilterWriter<'a, W> {
     /// Constructs a new [`BlockFilterWriter`] from `block`.
-    pub fn new(writer: &'a mut W, block: &'a Block<Checked>) -> BlockFilterWriter<'a, W> {
+    pub fn new(writer: &'a mut W, block: &'a Block<Checked>) -> Self {
         let block_hash_as_int = block.block_hash().to_byte_array();
         let k0 = u64::from_le_bytes(*block_hash_as_int.sub_array::<0, 8>());
         let k1 = u64::from_le_bytes(*block_hash_as_int.sub_array::<8, 8>());
@@ -207,7 +207,7 @@ impl<'a, W: Write> BlockFilterWriter<'a, W> {
     /// Adds output scripts of the block to filter (excluding OP_RETURN scripts).
     pub fn add_output_scripts(&mut self) {
         for transaction in self.block.transactions() {
-            for output in &transaction.output {
+            for output in &transaction.outputs {
                 if !output.script_pubkey.is_op_return() {
                     self.add_element(output.script_pubkey.as_bytes());
                 }
@@ -219,14 +219,14 @@ impl<'a, W: Write> BlockFilterWriter<'a, W> {
     pub fn add_input_scripts<M, S>(&mut self, script_for_coin: M) -> Result<(), Error>
     where
         M: Fn(&OutPoint) -> Result<S, Error>,
-        S: Borrow<Script>,
+        S: Borrow<ScriptPubKey>,
     {
         for script in self
             .block
             .transactions()
             .iter()
             .skip(1) // skip coinbase
-            .flat_map(|t| t.input.iter().map(|i| &i.previous_output))
+            .flat_map(|t| t.inputs.iter().map(|i| &i.previous_output))
             .map(script_for_coin)
         {
             match script {
@@ -251,11 +251,11 @@ pub struct BlockFilterReader {
 
 impl BlockFilterReader {
     /// Constructs a new [`BlockFilterReader`] from `block_hash`.
-    pub fn new(block_hash: BlockHash) -> BlockFilterReader {
+    pub fn new(block_hash: BlockHash) -> Self {
         let block_hash_as_int = block_hash.to_byte_array();
         let k0 = u64::from_le_bytes(*block_hash_as_int.sub_array::<0, 8>());
         let k1 = u64::from_le_bytes(*block_hash_as_int.sub_array::<8, 8>());
-        BlockFilterReader { reader: GcsFilterReader::new(k0, k1, M, P) }
+        Self { reader: GcsFilterReader::new(k0, k1, M, P) }
     }
 
     /// Returns true if any query matches against this [`BlockFilterReader`].
@@ -287,8 +287,8 @@ pub struct GcsFilterReader {
 
 impl GcsFilterReader {
     /// Constructs a new [`GcsFilterReader`] with specific seed to siphash.
-    pub fn new(k0: u64, k1: u64, m: u64, p: u8) -> GcsFilterReader {
-        GcsFilterReader { filter: GcsFilter::new(k0, k1, p), m }
+    pub fn new(k0: u64, k1: u64, m: u64, p: u8) -> Self {
+        Self { filter: GcsFilter::new(k0, k1, p), m }
     }
 
     /// Returns true if any query matches against this [`GcsFilterReader`].
@@ -306,7 +306,7 @@ impl GcsFilterReader {
         // sort
         mapped.sort_unstable();
         if mapped.is_empty() {
-            return Ok(true);
+            return Ok(false);
         }
         if n_elements == 0 {
             return Ok(false);
@@ -392,7 +392,7 @@ pub struct GcsFilterWriter<'a, W> {
 
 impl<'a, W: Write> GcsFilterWriter<'a, W> {
     /// Constructs a new [`GcsFilterWriter`] wrapping a generic writer, with specific seed to siphash.
-    pub fn new(writer: &'a mut W, k0: u64, k1: u64, m: u64, p: u8) -> GcsFilterWriter<'a, W> {
+    pub fn new(writer: &'a mut W, k0: u64, k1: u64, m: u64, p: u8) -> Self {
         GcsFilterWriter { filter: GcsFilter::new(k0, k1, p), writer, elements: BTreeSet::new(), m }
     }
 
@@ -439,7 +439,7 @@ struct GcsFilter {
 
 impl GcsFilter {
     /// Constructs a new [`GcsFilter`].
-    fn new(k0: u64, k1: u64, p: u8) -> GcsFilter { GcsFilter { k0, k1, p } }
+    fn new(k0: u64, k1: u64, p: u8) -> Self { Self { k0, k1, p } }
 
     /// Golomb-Rice encodes a number `n` to a bit stream (parameter 2^k).
     fn golomb_rice_encode<W>(
@@ -490,7 +490,7 @@ pub struct BitStreamReader<'a, R: ?Sized> {
 
 impl<'a, R: BufRead + ?Sized> BitStreamReader<'a, R> {
     /// Constructs a new [`BitStreamReader`] that reads bitwise from a given `reader`.
-    pub fn new(reader: &'a mut R) -> BitStreamReader<'a, R> {
+    pub fn new(reader: &'a mut R) -> Self {
         BitStreamReader { buffer: [0u8], reader, offset: 8 }
     }
 
@@ -538,7 +538,7 @@ pub struct BitStreamWriter<'a, W> {
 
 impl<'a, W: Write> BitStreamWriter<'a, W> {
     /// Constructs a new [`BitStreamWriter`] that writes bitwise to a given `writer`.
-    pub fn new(writer: &'a mut W) -> BitStreamWriter<'a, W> {
+    pub fn new(writer: &'a mut W) -> Self {
         BitStreamWriter { buffer: [0u8], writer, offset: 0 }
     }
 
@@ -579,14 +579,14 @@ impl<'a, W: Write> BitStreamWriter<'a, W> {
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for FilterHash {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(FilterHash::from_byte_array(u.arbitrary()?))
+        Ok(Self::from_byte_array(u.arbitrary()?))
     }
 }
 
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for FilterHeader {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(FilterHeader::from_byte_array(u.arbitrary()?))
+        Ok(Self::from_byte_array(u.arbitrary()?))
     }
 }
 
@@ -599,7 +599,7 @@ mod test {
 
     use super::*;
     use crate::consensus::encode::deserialize;
-    use crate::ScriptBuf;
+    use crate::ScriptPubKeyBuf;
 
     #[test]
     fn blockfilters() {
@@ -624,10 +624,10 @@ mod test {
             let mut txmap = HashMap::new();
             let mut si = scripts.iter();
             for tx in block.transactions().iter().skip(1) {
-                for input in tx.input.iter() {
+                for input in tx.inputs.iter() {
                     txmap.insert(
                         input.previous_output,
-                        ScriptBuf::from(hex(si.next().unwrap().as_str().unwrap())),
+                        ScriptPubKeyBuf::from(hex(si.next().unwrap().as_str().unwrap())),
                     );
                 }
             }

@@ -3,7 +3,7 @@
 //! HMAC-based Extract-and-Expand Key Derivation Function (HKDF).
 //!
 //! Implementation based on RFC5869, but the interface is scoped
-//! to BIP324's requirements.
+//! to BIP-0324's requirements.
 
 #[cfg(feature = "alloc")]
 use alloc::vec;
@@ -42,7 +42,7 @@ impl<T: HashEngine> Hkdf<T>
 where
     T: Default,
 {
-    /// Initialize a HKDF by performing the extract step.
+    /// Initializes a HKDF by performing the extract step.
     pub fn new(salt: &[u8], ikm: &[u8]) -> Self {
         let mut engine: HmacEngine<T> = HmacEngine::new(salt);
         engine.input(ikm);
@@ -62,7 +62,7 @@ where
         // Counter starts at "1" based on RFC5869 spec and is committed to in the hash.
         let mut counter = 1u8;
         // Ceiling calculation for the total number of blocks (iterations) required for the expand.
-        let total_blocks = (okm.len() + T::Bytes::LEN - 1) / T::Bytes::LEN;
+        let total_blocks = okm.len().div_ceil(T::Bytes::LEN);
 
         while counter <= total_blocks as u8 {
             let mut engine: HmacEngine<T> = HmacEngine::new(self.prk.as_ref());

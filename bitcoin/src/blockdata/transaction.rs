@@ -14,30 +14,51 @@ use core::fmt;
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
-use hashes::sha256d;
-use internals::{compact_size, write_err, ToU64};
+use internals::{compact_size, const_casts, write_err, ToU64};
 use io::{BufRead, Write};
-use primitives::Sequence;
 
 use super::Weight;
 use crate::consensus::{self, encode, Decodable, Encodable};
-use crate::internal_macros::{impl_consensus_encoding, impl_hashencode};
 use crate::locktime::absolute::{self, Height, MedianTimePast};
 use crate::prelude::{Borrow, Vec};
-use crate::script::{Script, ScriptBuf, ScriptExt as _, ScriptExtPriv as _};
+use crate::script::{
+    RedeemScript, ScriptExt as _, ScriptExtPriv as _, ScriptPubKey, ScriptPubKeyBuf,
+    ScriptPubKeyExt as _, WitnessScript,
+};
 #[cfg(doc)]
 use crate::sighash::{EcdsaSighashType, TapSighashType};
 use crate::witness::Witness;
-use crate::{Amount, FeeRate, SignedAmount};
+use crate::{internal_macros, Amount, FeeRate, Sequence, SignedAmount};
 
 #[rustfmt::skip]            // Keep public re-exports separate.
 #[doc(inline)]
-pub use primitives::transaction::{OutPoint, ParseOutPointError, Transaction, Txid, Wtxid, Version, TxIn, TxOut};
+pub use primitives::transaction::{OutPoint, ParseOutPointError, Transaction, Ntxid, Txid, Wtxid, Version, TxIn, TxOut};
 
-impl_hashencode!(Txid);
-impl_hashencode!(Wtxid);
+impl Encodable for Txid {
+    fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
+        self.to_byte_array().consensus_encode(w)
+    }
+}
 
-crate::internal_macros::define_extension_trait! {
+impl Decodable for Txid {
+    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
+        Ok(Self::from_byte_array(<[u8; 32]>::consensus_decode(r)?))
+    }
+}
+
+impl Encodable for Wtxid {
+    fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
+        self.to_byte_array().consensus_encode(w)
+    }
+}
+
+impl Decodable for Wtxid {
+    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
+        Ok(Self::from_byte_array(<[u8; 32]>::consensus_decode(r)?))
+    }
+}
+
+internal_macros::define_extension_trait! {
     /// Extension functionality for the [`Txid`] type.
     pub trait TxidExt impl for Txid {
         /// The "all zeros" TXID.
@@ -46,7 +67,7 @@ crate::internal_macros::define_extension_trait! {
     }
 }
 
-crate::internal_macros::define_extension_trait! {
+internal_macros::define_extension_trait! {
     /// Extension functionality for the [`Wtxid`] type.
     pub trait WtxidExt impl for Wtxid {
         /// The "all zeros" wTXID.
@@ -62,12 +83,12 @@ impl TxIdentifier for Txid {}
 impl TxIdentifier for Wtxid {}
 
 // Duplicated in `primitives`.
-/// The marker MUST be a 1-byte zero value: 0x00. (BIP-141)
+/// The marker MUST be a 1-byte zero value: 0x00. (BIP-0141)
 const SEGWIT_MARKER: u8 = 0x00;
-/// The flag MUST be a 1-byte non-zero value. Currently, 0x01 MUST be used. (BIP-141)
+/// The flag MUST be a 1-byte non-zero value. Currently, 0x01 MUST be used. (BIP-0141)
 const SEGWIT_FLAG: u8 = 0x01;
 
-crate::internal_macros::define_extension_trait! {
+internal_macros::define_extension_trait! {
     /// Extension functionality for the [`OutPoint`] type.
     pub trait OutPointExt impl for OutPoint {
         /// Constructs a new [`OutPoint`].
@@ -90,7 +111,7 @@ crate::internal_macros::define_extension_trait! {
 const TX_IN_BASE_WEIGHT: Weight =
     Weight::from_vb_unchecked(OutPoint::SIZE as u64 + Sequence::SIZE as u64);
 
-crate::internal_macros::define_extension_trait! {
+internal_macros::define_extension_trait! {
     /// Extension functionality for the [`TxIn`] type.
     pub trait TxInExt impl for TxIn {
         /// Returns true if this input enables the [`absolute::LockTime`] (aka `nLockTime`) of its
@@ -101,7 +122,7 @@ crate::internal_macros::define_extension_trait! {
         ///  ignored. If this returns false and OP_CHECKLOCKTIMEVERIFY is used in the redeem script with
         ///  this input then the script execution will fail [BIP-0065].
         ///
-        /// [BIP-65](https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki)
+        /// [BIP-0065](https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki)
         fn enables_lock_time(&self) -> bool { self.sequence != Sequence::MAX }
 
         /// The weight of the TxIn when it's included in a legacy transaction (i.e., a transaction
@@ -112,30 +133,42 @@ crate::internal_macros::define_extension_trait! {
         ///
         /// Keep in mind that when adding a TxIn to a transaction, the total weight of the transaction
         /// might increase more than `TxIn::legacy_weight`. This happens when the new input added causes
-        /// the input length `VarInt` to increase its encoding length.
+        /// the input length `CompactSize` to increase its encoding length.
+        ///
+        /// # Panics
+        ///
+        /// If the conversion overflows.
         fn legacy_weight(&self) -> Weight {
-            Weight::from_non_witness_data_size(self.base_size().to_u64())
+            Weight::from_vb(self.base_size().to_u64()).unwrap()
         }
 
         /// The weight of the TxIn when it's included in a SegWit transaction (i.e., a transaction
         /// having at least one SegWit input).
         ///
-        /// This always takes into account the witness, even when empty, in which
-        /// case 1WU for the witness length varint (`00`) is included.
+        /// This always takes into account the witness, even when empty (in which
+        /// case 1WU for the witness length `00` is included).
         ///
         /// Keep in mind that when adding a TxIn to a transaction, the total weight of the transaction
         /// might increase more than `TxIn::segwit_weight`. This happens when:
-        /// - the new input added causes the input length `VarInt` to increase its encoding length
+        /// - the new input added causes the input length `CompactSize` to increase its encoding length
         /// - the new input is the first segwit input added - this will add an additional 2WU to the
         ///   transaction weight to take into account the SegWit marker
+        ///
+        /// # Panics
+        ///
+        /// If the conversion overflows.
         fn segwit_weight(&self) -> Weight {
-            Weight::from_non_witness_data_size(self.base_size().to_u64())
-                + Weight::from_witness_data_size(self.witness.size().to_u64())
+            Weight::from_vb(self.base_size().to_u64())
+            .and_then(|w| w.checked_add(Weight::from_wu(self.witness.size().to_u64()))).unwrap()
         }
 
         /// Returns the base size of this input.
         ///
         /// Base size excludes the witness data (see [`Self::total_size`]).
+        ///
+        /// # Panics
+        ///
+        /// If the size calculation overflows.
         fn base_size(&self) -> usize {
             let mut size = OutPoint::SIZE;
 
@@ -148,18 +181,22 @@ crate::internal_macros::define_extension_trait! {
         /// Returns the total number of bytes that this input contributes to a transaction.
         ///
         /// Total size includes the witness data (for base size see [`Self::base_size`]).
+        ///
+        /// # Panics
+        ///
+        /// If the size calculation overflows.
         fn total_size(&self) -> usize { self.base_size() + self.witness.size() }
     }
 }
 
-crate::internal_macros::define_extension_trait! {
+internal_macros::define_extension_trait! {
     /// Extension functionality for the [`TxOut`] type.
     pub trait TxOutExt impl for TxOut {
         /// The weight of this output.
         ///
         /// Keep in mind that when adding a [`TxOut`] to a [`Transaction`] the total weight of the
         /// transaction might increase more than `TxOut::weight`. This happens when the new output added
-        /// causes the output length `VarInt` to increase its encoding length.
+        /// causes the output length `CompactSize` to increase its encoding length.
         ///
         /// # Panics
         ///
@@ -185,11 +222,11 @@ crate::internal_macros::define_extension_trait! {
         /// To use a custom value, use [`minimal_non_dust_custom`].
         ///
         /// [`minimal_non_dust_custom`]: TxOut::minimal_non_dust_custom
-        fn minimal_non_dust(script_pubkey: ScriptBuf) -> TxOut {
-            TxOut { value: script_pubkey.minimal_non_dust(), script_pubkey }
+        fn minimal_non_dust(script_pubkey: ScriptPubKeyBuf) -> Self {
+            TxOut { amount: script_pubkey.minimal_non_dust(), script_pubkey }
         }
 
-        /// Constructs a new `TxOut` with given script and the smallest possible `value` that is **not** dust
+        /// Constructs a new `TxOut` with given script and the smallest possible `amount` that is **not** dust
         /// per current Core policy.
         ///
         /// Dust depends on the -dustrelayfee value of the Bitcoin Core node you are broadcasting to.
@@ -200,14 +237,17 @@ crate::internal_macros::define_extension_trait! {
         /// To use the default Bitcoin Core value, use [`minimal_non_dust`].
         ///
         /// [`minimal_non_dust`]: TxOut::minimal_non_dust
-        fn minimal_non_dust_custom(script_pubkey: ScriptBuf, dust_relay_fee: FeeRate) -> Option<TxOut> {
-            Some(TxOut { value: script_pubkey.minimal_non_dust_custom(dust_relay_fee)?, script_pubkey })
+        fn minimal_non_dust_custom(script_pubkey: ScriptPubKeyBuf, dust_relay_fee: FeeRate) -> Option<Self>
+        where
+            Self: Sized
+        {
+            Some(TxOut { amount: script_pubkey.minimal_non_dust_custom(dust_relay_fee)?, script_pubkey })
         }
     }
 }
 
 /// Returns the total number of bytes that this script pubkey would contribute to a transaction.
-fn size_from_script_pubkey(script_pubkey: &Script) -> usize {
+fn size_from_script_pubkey(script_pubkey: &ScriptPubKey) -> usize {
     let len = script_pubkey.len();
     Amount::SIZE + compact_size::encoded_size(len) + len
 }
@@ -216,7 +256,7 @@ fn size_from_script_pubkey(script_pubkey: &Script) -> usize {
 pub trait TransactionExt: sealed::Sealed {
     /// Computes a "normalized TXID" which does not include any signatures.
     #[deprecated(since = "0.31.0", note = "use `compute_ntxid()` instead")]
-    fn ntxid(&self) -> sha256d::Hash;
+    fn ntxid(&self) -> Ntxid;
 
     /// Computes the [`Txid`].
     #[deprecated(since = "0.31.0", note = "use `compute_txid()` instead")]
@@ -226,7 +266,7 @@ pub trait TransactionExt: sealed::Sealed {
     #[deprecated(since = "0.31.0", note = "use `compute_wtxid()` instead")]
     fn wtxid(&self) -> Wtxid;
 
-    /// Returns the weight of this transaction, as defined by BIP-141.
+    /// Returns the weight of this transaction, as defined by BIP-0141.
     ///
     /// > Transaction weight is defined as Base transaction size * 3 + Total transaction size (ie.
     /// > the same method as calculating Block weight from Base size and Total size).
@@ -238,7 +278,7 @@ pub trait TransactionExt: sealed::Sealed {
     /// For transactions with no inputs, this function will return a value 2 less than the actual
     /// weight of the serialized transaction. The reason is that zero-input transactions, post-SegWit,
     /// cannot be unambiguously serialized; we make a choice that adds two extra bytes. For more
-    /// details see [BIP 141](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki)
+    /// details see [BIP-0141](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki)
     /// which uses a "input count" of `0x00` as a `marker` for a SegWit-encoded transaction.
     ///
     /// If you need to use 0-input transactions, we strongly recommend you do so using the PSBT
@@ -249,24 +289,32 @@ pub trait TransactionExt: sealed::Sealed {
     /// Returns the base transaction size.
     ///
     /// > Base transaction size is the size of the transaction serialised with the witness data stripped.
+    ///
+    /// # Panics
+    ///
+    /// If the size calculation overflows.
     fn base_size(&self) -> usize;
 
     /// Returns the total transaction size.
     ///
-    /// > Total transaction size is the transaction size in bytes serialized as described in BIP144,
+    /// > Total transaction size is the transaction size in bytes serialized as described in BIP-0144,
     /// > including base data and witness data.
+    ///
+    /// # Panics
+    ///
+    /// If the size calculation overflows.
     fn total_size(&self) -> usize;
 
     /// Returns the "virtual size" (vsize) of this transaction.
     ///
-    /// Will be `ceil(weight / 4.0)`. Note this implements the virtual size as per [`BIP141`], which
+    /// Will be `ceil(weight / 4.0)`. Note this implements the virtual size as per [`BIP-0141`], which
     /// is different to what is implemented in Bitcoin Core. The computation should be the same for
     /// any remotely sane transaction, and a standardness-rule-correct version is available in the
     /// [`policy`] module.
     ///
     /// > Virtual transaction size is defined as Transaction weight / 4 (rounded up to the next integer).
     ///
-    /// [`BIP141`]: https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki
+    /// [`BIP-0141`]: https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki
     /// [`policy`]: crate::policy
     fn vsize(&self) -> usize;
 
@@ -279,7 +327,7 @@ pub trait TransactionExt: sealed::Sealed {
     #[doc(alias = "is_coin_base")] // method previously had this name
     fn is_coinbase(&self) -> bool;
 
-    /// Returns `true` if the transaction itself opted in to be BIP-125-replaceable (RBF).
+    /// Returns `true` if the transaction itself opted in to be BIP-0125-replaceable (RBF).
     ///
     /// # Warning
     ///
@@ -299,9 +347,9 @@ pub trait TransactionExt: sealed::Sealed {
     /// transaction from being mined immediately.
     fn is_absolute_timelock_satisfied(&self, height: Height, time: MedianTimePast) -> bool;
 
-    /// Returns `true` if this transactions nLockTime is enabled ([BIP-65]).
+    /// Returns `true` if this transactions nLockTime is enabled ([BIP-0065]).
     ///
-    /// [BIP-65]: https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki
+    /// [BIP-0065]: https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki
     fn is_lock_time_enabled(&self) -> bool;
 
     /// Returns an iterator over lengths of `script_pubkey`s in the outputs.
@@ -335,7 +383,7 @@ pub trait TransactionExt: sealed::Sealed {
 }
 
 impl TransactionExt for Transaction {
-    fn ntxid(&self) -> sha256d::Hash { self.compute_ntxid() }
+    fn ntxid(&self) -> Ntxid { self.compute_ntxid() }
 
     fn txid(&self) -> Txid { self.compute_txid() }
 
@@ -343,7 +391,7 @@ impl TransactionExt for Transaction {
 
     #[inline]
     fn weight(&self) -> Weight {
-        // This is the exact definition of a weight unit, as defined by BIP-141 (quote above).
+        // This is the exact definition of a weight unit, as defined by BIP-0141 (quote above).
         let wu = self.base_size() * 3 + self.total_size();
         Weight::from_wu(wu.to_u64())
     }
@@ -351,11 +399,11 @@ impl TransactionExt for Transaction {
     fn base_size(&self) -> usize {
         let mut size: usize = 4; // Serialized length of a u32 for the version number.
 
-        size += compact_size::encoded_size(self.input.len());
-        size += self.input.iter().map(|input| input.base_size()).sum::<usize>();
+        size += compact_size::encoded_size(self.inputs.len());
+        size += self.inputs.iter().map(|input| input.base_size()).sum::<usize>();
 
-        size += compact_size::encoded_size(self.output.len());
-        size += self.output.iter().map(|output| output.size()).sum::<usize>();
+        size += compact_size::encoded_size(self.outputs.len());
+        size += self.outputs.iter().map(|output| output.size()).sum::<usize>();
 
         size + absolute::LockTime::SIZE
     }
@@ -369,15 +417,15 @@ impl TransactionExt for Transaction {
             size += 2; // 1 byte for the marker and 1 for the flag.
         }
 
-        size += compact_size::encoded_size(self.input.len());
+        size += compact_size::encoded_size(self.inputs.len());
         size += self
-            .input
+            .inputs
             .iter()
             .map(|input| if uses_segwit { input.total_size() } else { input.base_size() })
             .sum::<usize>();
 
-        size += compact_size::encoded_size(self.output.len());
-        size += self.output.iter().map(|output| output.size()).sum::<usize>();
+        size += compact_size::encoded_size(self.outputs.len());
+        size += self.outputs.iter().map(|output| output.size()).sum::<usize>();
 
         size + absolute::LockTime::SIZE
     }
@@ -390,10 +438,10 @@ impl TransactionExt for Transaction {
 
     #[doc(alias = "is_coin_base")] // method previously had this name
     fn is_coinbase(&self) -> bool {
-        self.input.len() == 1 && self.input[0].previous_output == OutPoint::COINBASE_PREVOUT
+        self.inputs.len() == 1 && self.inputs[0].previous_output == OutPoint::COINBASE_PREVOUT
     }
 
-    fn is_explicitly_rbf(&self) -> bool { self.input.iter().any(|input| input.sequence.is_rbf()) }
+    fn is_explicitly_rbf(&self) -> bool { self.inputs.iter().any(|input| input.sequence.is_rbf()) }
 
     fn is_absolute_timelock_satisfied(&self, height: Height, time: MedianTimePast) -> bool {
         if !self.is_lock_time_enabled() {
@@ -402,10 +450,10 @@ impl TransactionExt for Transaction {
         self.lock_time.is_satisfied_by(height, time)
     }
 
-    fn is_lock_time_enabled(&self) -> bool { self.input.iter().any(|i| i.enables_lock_time()) }
+    fn is_lock_time_enabled(&self) -> bool { self.inputs.iter().any(|i| i.enables_lock_time()) }
 
     fn script_pubkey_lens(&self) -> TxOutToScriptPubkeyLengthIter<'_> {
-        TxOutToScriptPubkeyLengthIter { inner: self.output.iter() }
+        TxOutToScriptPubkeyLengthIter { inner: self.outputs.iter() }
     }
 
     fn total_sigop_cost<S>(&self, mut spent: S) -> usize
@@ -421,16 +469,16 @@ impl TransactionExt for Transaction {
 
     #[inline]
     fn tx_in(&self, input_index: usize) -> Result<&TxIn, InputsIndexError> {
-        self.input
+        self.inputs
             .get(input_index)
-            .ok_or(IndexOutOfBoundsError { index: input_index, length: self.input.len() }.into())
+            .ok_or(IndexOutOfBoundsError { index: input_index, length: self.inputs.len() }.into())
     }
 
     #[inline]
     fn tx_out(&self, output_index: usize) -> Result<&TxOut, OutputsIndexError> {
-        self.output
+        self.outputs
             .get(output_index)
-            .ok_or(IndexOutOfBoundsError { index: output_index, length: self.output.len() }.into())
+            .ok_or(IndexOutOfBoundsError { index: output_index, length: self.outputs.len() }.into())
     }
 }
 
@@ -464,7 +512,7 @@ trait TransactionExtPriv {
     where
         S: FnMut(&OutPoint) -> Option<TxOut>;
 
-    /// Returns whether or not to serialize transaction as specified in BIP-144.
+    /// Returns whether or not to serialize transaction as specified in BIP-0144.
     fn uses_segwit_serialization(&self) -> bool;
 }
 
@@ -472,11 +520,11 @@ impl TransactionExtPriv for Transaction {
     /// Gets the sigop count.
     fn count_p2pk_p2pkh_sigops(&self) -> usize {
         let mut count: usize = 0;
-        for input in &self.input {
+        for input in &self.inputs {
             // 0 for p2wpkh, p2wsh, and p2sh (including wrapped SegWit).
             count = count.saturating_add(input.script_sig.count_sigops_legacy());
         }
-        for output in &self.output {
+        for output in &self.outputs {
             count = count.saturating_add(output.script_pubkey.count_sigops_legacy());
         }
         count
@@ -491,15 +539,15 @@ impl TransactionExtPriv for Transaction {
             let mut count: usize = 0;
             if prevout.script_pubkey.is_p2sh() {
                 if let Some(redeem) = input.script_sig.last_pushdata() {
-                    count =
-                        count.saturating_add(Script::from_bytes(redeem.as_bytes()).count_sigops());
+                    count = count
+                        .saturating_add(RedeemScript::from_bytes(redeem.as_bytes()).count_sigops());
                 }
             }
             count
         }
 
         let mut count: usize = 0;
-        for input in &self.input {
+        for input in &self.inputs {
             if let Some(prevout) = spent(&input.previous_output) {
                 count = count.saturating_add(count_sigops(&prevout, input));
             }
@@ -512,12 +560,15 @@ impl TransactionExtPriv for Transaction {
     where
         S: FnMut(&OutPoint) -> Option<TxOut>,
     {
-        fn count_sigops_with_witness_program(witness: &Witness, witness_program: &Script) -> usize {
+        fn count_sigops_with_witness_program(
+            witness: &Witness,
+            witness_program: &ScriptPubKey,
+        ) -> usize {
             if witness_program.is_p2wpkh() {
                 1
             } else if witness_program.is_p2wsh() {
                 // Treat the last item of the witness as the witnessScript
-                witness.last().map(Script::from_bytes).map(|s| s.count_sigops()).unwrap_or(0)
+                witness.last().map(WitnessScript::from_bytes).map(|s| s.count_sigops()).unwrap_or(0)
             } else {
                 0
             }
@@ -531,9 +582,11 @@ impl TransactionExtPriv for Transaction {
                 &prevout.script_pubkey
             } else if prevout.script_pubkey.is_p2sh() && script_sig.is_push_only() {
                 // If prevout is P2SH and scriptSig is push only
-                // then we wrap the last push (redeemScript) in a Script
+                // then we wrap the last push (redeemScript) in a Script; we use a ScriptPubKey to keep our types
+                // consistent although strictly speaking it should
+                // be a RedeemScript.
                 if let Some(push_bytes) = script_sig.last_pushdata() {
-                    Script::from_bytes(push_bytes.as_bytes())
+                    ScriptPubKey::from_bytes(push_bytes.as_bytes())
                 } else {
                     return 0;
                 }
@@ -546,7 +599,7 @@ impl TransactionExtPriv for Transaction {
         }
 
         let mut count: usize = 0;
-        for input in &self.input {
+        for input in &self.inputs {
             if let Some(prevout) = spent(&input.previous_output) {
                 count = count.saturating_add(count_sigops(prevout, input));
             }
@@ -554,15 +607,15 @@ impl TransactionExtPriv for Transaction {
         count
     }
 
-    /// Returns whether or not to serialize transaction as specified in BIP-144.
+    /// Returns whether or not to serialize transaction as specified in BIP-0144.
     // This is duplicated in `primitives`, if you change it please do so in both places.
     fn uses_segwit_serialization(&self) -> bool {
-        if self.input.iter().any(|input| !input.witness.is_empty()) {
+        if self.inputs.iter().any(|input| !input.witness.is_empty()) {
             return true;
         }
-        // To avoid serialization ambiguity, no inputs means we use BIP141 serialization (see
+        // To avoid serialization ambiguity, no inputs means we use BIP-0141 serialization (see
         // `Transaction` docs for full explanation).
-        self.input.is_empty()
+        self.inputs.is_empty()
     }
 }
 
@@ -633,11 +686,11 @@ impl Encodable for Version {
 
 impl Decodable for Version {
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-        Decodable::consensus_decode(r).map(Version::maybe_non_standard)
+        Decodable::consensus_decode(r).map(Self::maybe_non_standard)
     }
 }
 
-impl_consensus_encoding!(TxOut, value, script_pubkey);
+internal_macros::impl_consensus_encoding!(TxOut, amount, script_pubkey);
 
 impl Encodable for OutPoint {
     fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
@@ -647,7 +700,7 @@ impl Encodable for OutPoint {
 }
 impl Decodable for OutPoint {
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-        Ok(OutPoint {
+        Ok(Self {
             txid: Decodable::consensus_decode(r)?,
             vout: Decodable::consensus_decode(r)?,
         })
@@ -668,7 +721,7 @@ impl Decodable for TxIn {
     fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(
         r: &mut R,
     ) -> Result<Self, encode::Error> {
-        Ok(TxIn {
+        Ok(Self {
             previous_output: Decodable::consensus_decode_from_finite_reader(r)?,
             script_sig: Decodable::consensus_decode_from_finite_reader(r)?,
             sequence: Decodable::consensus_decode_from_finite_reader(r)?,
@@ -696,15 +749,15 @@ impl Encodable for Transaction {
 
         // Legacy transaction serialization format only includes inputs and outputs.
         if !self.uses_segwit_serialization() {
-            len += self.input.consensus_encode(w)?;
-            len += self.output.consensus_encode(w)?;
+            len += self.inputs.consensus_encode(w)?;
+            len += self.outputs.consensus_encode(w)?;
         } else {
-            // BIP-141 (SegWit) transaction serialization also includes marker, flag, and witness data.
+            // BIP-0141 (SegWit) transaction serialization also includes marker, flag, and witness data.
             len += SEGWIT_MARKER.consensus_encode(w)?;
             len += SEGWIT_FLAG.consensus_encode(w)?;
-            len += self.input.consensus_encode(w)?;
-            len += self.output.consensus_encode(w)?;
-            for input in &self.input {
+            len += self.inputs.consensus_encode(w)?;
+            len += self.outputs.consensus_encode(w)?;
+            for input in &self.inputs {
                 len += input.witness.consensus_encode(w)?;
             }
         }
@@ -718,27 +771,27 @@ impl Decodable for Transaction {
         r: &mut R,
     ) -> Result<Self, encode::Error> {
         let version = Version::consensus_decode_from_finite_reader(r)?;
-        let input = Vec::<TxIn>::consensus_decode_from_finite_reader(r)?;
+        let inputs = Vec::<TxIn>::consensus_decode_from_finite_reader(r)?;
         // SegWit
-        if input.is_empty() {
+        if inputs.is_empty() {
             let segwit_flag = u8::consensus_decode_from_finite_reader(r)?;
             match segwit_flag {
-                // BIP144 input witnesses
+                // BIP-0144 input witnesses
                 1 => {
-                    let mut input = Vec::<TxIn>::consensus_decode_from_finite_reader(r)?;
-                    let output = Vec::<TxOut>::consensus_decode_from_finite_reader(r)?;
-                    for txin in input.iter_mut() {
+                    let mut inputs = Vec::<TxIn>::consensus_decode_from_finite_reader(r)?;
+                    let outputs = Vec::<TxOut>::consensus_decode_from_finite_reader(r)?;
+                    for txin in inputs.iter_mut() {
                         txin.witness = Decodable::consensus_decode_from_finite_reader(r)?;
                     }
-                    if !input.is_empty() && input.iter().all(|input| input.witness.is_empty()) {
+                    if !inputs.is_empty() && inputs.iter().all(|input| input.witness.is_empty()) {
                         Err(consensus::parse_failed_error(
                             "witness flag set but no witnesses present",
                         ))
                     } else {
-                        Ok(Transaction {
+                        Ok(Self {
                             version,
-                            input,
-                            output,
+                            inputs,
+                            outputs,
                             lock_time: Decodable::consensus_decode_from_finite_reader(r)?,
                         })
                     }
@@ -748,10 +801,10 @@ impl Decodable for Transaction {
             }
         // non-SegWit
         } else {
-            Ok(Transaction {
+            Ok(Self {
                 version,
-                input,
-                output: Decodable::consensus_decode_from_finite_reader(r)?,
+                inputs,
+                outputs: Decodable::consensus_decode_from_finite_reader(r)?,
                 lock_time: Decodable::consensus_decode_from_finite_reader(r)?,
             })
         }
@@ -765,13 +818,13 @@ impl Decodable for Transaction {
 ///
 /// Note: the effective value of a [`Transaction`] may increase less than the effective value of
 /// a [`TxOut`] when adding another [`TxOut`] to the transaction. This happens when the new
-/// [`TxOut`] added causes the output length `VarInt` to increase its encoding length.
+/// [`TxOut`] added causes the output length `CompactSize` to increase its encoding length.
 ///
 /// # Parameters
 ///
 /// * `fee_rate` - the fee rate of the transaction being created.
 /// * `input_weight_prediction` - the predicted input weight.
-/// * `value` - The value of the output we are spending.
+/// * `value` - the value of the output we are spending.
 pub fn effective_value(
     fee_rate: FeeRate,
     input_weight_prediction: InputWeightPrediction,
@@ -780,9 +833,7 @@ pub fn effective_value(
     let weight = input_weight_prediction.total_weight();
     let fee = fee_rate.to_fee(weight);
 
-    // Cannot overflow because after conversion to signed Amount::MIN - Amount::MAX
-    // still fits in SignedAmount::MAX (0 - MAX = -MAX).
-    (value.to_signed() - fee.to_signed()).expect("cannot overflow")
+    value.signed_sub(fee)
 }
 
 /// Predicts the weight of a to-be-constructed transaction.
@@ -798,8 +849,7 @@ pub fn effective_value(
 ///   of the to-be-constructed transaction.
 ///
 /// Note that lengths of the scripts and witness elements must be non-serialized, IOW *without* the
-/// preceding compact size. The length of preceding compact size is computed and added inside the
-/// function for convenience.
+/// length prefix. The length is computed and added inside the function for convenience.
 ///
 /// If you have the transaction already constructed (except for signatures) with a dummy value for
 /// fee output you can use the return value of [`Transaction::script_pubkey_lens`] method directly
@@ -941,7 +991,7 @@ impl InputWeightPrediction {
     /// under-paying. See [`ground_p2wpkh`](Self::ground_p2wpkh) if you do use signature grinding.
     ///
     /// [signature grinding]: https://bitcoin.stackexchange.com/questions/111660/what-is-signature-grinding
-    pub const P2WPKH_MAX: Self = InputWeightPrediction::from_slice(0, &[72, 33]);
+    pub const P2WPKH_MAX: Self = Self::from_slice(0, &[72, 33]);
 
     /// Input weight prediction corresponding to spending of [nested P2WPKH] output with the largest possible
     /// DER-encoded signature.
@@ -954,7 +1004,7 @@ impl InputWeightPrediction {
     ///
     /// [nested P2WPKH]: https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#p2wpkh-nested-in-bip16-p2sh
     /// [signature grinding]: https://bitcoin.stackexchange.com/questions/111660/what-is-signature-grinding
-    pub const NESTED_P2WPKH_MAX: Self = InputWeightPrediction::from_slice(23, &[72, 33]);
+    pub const NESTED_P2WPKH_MAX: Self = Self::from_slice(23, &[72, 33]);
 
     /// Input weight prediction corresponding to spending of a P2PKH output with the largest possible
     /// DER-encoded signature, and a compressed public key.
@@ -967,28 +1017,28 @@ impl InputWeightPrediction {
     /// signature grinding.
     ///
     /// [signature grinding]: https://bitcoin.stackexchange.com/questions/111660/what-is-signature-grinding
-    pub const P2PKH_COMPRESSED_MAX: Self = InputWeightPrediction::from_slice(107, &[]);
+    pub const P2PKH_COMPRESSED_MAX: Self = Self::from_slice(107, &[]);
 
     /// Input weight prediction corresponding to spending of a P2PKH output with the largest possible
     /// DER-encoded signature, and an uncompressed public key.
     ///
     /// If the input in your transaction uses P2PKH with an uncompressed key, you can use this instead of
     /// [`InputWeightPrediction::new`].
-    pub const P2PKH_UNCOMPRESSED_MAX: Self = InputWeightPrediction::from_slice(139, &[]);
+    pub const P2PKH_UNCOMPRESSED_MAX: Self = Self::from_slice(139, &[]);
 
     /// Input weight prediction corresponding to spending of Taproot output using the key and
     /// default sighash.
     ///
     /// If the input in your transaction uses Taproot key spend you can use this instead of
     /// [`InputWeightPrediction::new`].
-    pub const P2TR_KEY_DEFAULT_SIGHASH: Self = InputWeightPrediction::from_slice(0, &[64]);
+    pub const P2TR_KEY_DEFAULT_SIGHASH: Self = Self::from_slice(0, &[64]);
 
     /// Input weight prediction corresponding to spending of Taproot output using the key and
     /// **non**-default sighash.
     ///
     /// If the input in your transaction uses Taproot key spend you can use this instead of
     /// [`InputWeightPrediction::new`].
-    pub const P2TR_KEY_NON_DEFAULT_SIGHASH: Self = InputWeightPrediction::from_slice(0, &[65]);
+    pub const P2TR_KEY_NON_DEFAULT_SIGHASH: Self = Self::from_slice(0, &[65]);
 
     const fn saturate_to_u32(x: usize) -> u32 {
         if x > u32::MAX as usize {
@@ -1024,7 +1074,7 @@ impl InputWeightPrediction {
     pub const fn ground_p2wpkh(bytes_to_grind: usize) -> Self {
         // Written to trigger const/debug panic for unreasonably high values.
         let der_signature_size = 10 + (62 - bytes_to_grind);
-        InputWeightPrediction::from_slice(0, &[der_signature_size, 33])
+        Self::from_slice(0, &[der_signature_size, 33])
     }
 
     /// Input weight prediction corresponding to spending of [nested P2WPKH] output using [signature
@@ -1045,7 +1095,7 @@ impl InputWeightPrediction {
     pub const fn ground_nested_p2wpkh(bytes_to_grind: usize) -> Self {
         // Written to trigger const/debug panic for unreasonably high values.
         let der_signature_size = 10 + (62 - bytes_to_grind);
-        InputWeightPrediction::from_slice(23, &[der_signature_size, 33])
+        Self::from_slice(23, &[der_signature_size, 33])
     }
 
     /// Input weight prediction corresponding to spending of a P2PKH output using [signature
@@ -1066,7 +1116,7 @@ impl InputWeightPrediction {
         // Written to trigger const/debug panic for unreasonably high values.
         let der_signature_size = 10 + (62 - bytes_to_grind);
 
-        InputWeightPrediction::from_slice(2 + 33 + der_signature_size, &[])
+        Self::from_slice(2 + 33 + der_signature_size, &[])
     }
 
     /// Computes the prediction for a single input.
@@ -1088,7 +1138,7 @@ impl InputWeightPrediction {
         let script_size =
             Self::saturate_to_u32(input_script_len) + Self::encoded_size(input_script_len);
 
-        InputWeightPrediction { script_size, witness_size }
+        Self { script_size, witness_size }
     }
 
     /// Computes the prediction for a single input in `const` context.
@@ -1115,11 +1165,11 @@ impl InputWeightPrediction {
         let script_size = Self::saturate_to_u32(input_script_len)
             .saturating_add(Self::encoded_size(input_script_len));
 
-        InputWeightPrediction { script_size, witness_size }
+        Self { script_size, witness_size }
     }
 
     /// Computes the **signature weight** added to a transaction by an input with this weight prediction,
-    /// not counting the prevout (txid, index), sequence, potential witness flag bytes or the witness count varint.
+    /// not counting the prevout (txid, index), sequence, potential witness flag bytes or the witness count.
     ///
     /// This function's internal arithmetic saturates at u32::MAX, so the return value of this
     /// function may be inaccurate for extremely large witness predictions.
@@ -1141,7 +1191,7 @@ impl InputWeightPrediction {
     }
 
     /// Computes the **signature weight** added to a transaction by an input with this weight prediction,
-    /// not counting the prevout (txid, index), sequence, potential witness flag bytes or the witness count varint.
+    /// not counting the prevout (txid, index), sequence, potential witness flag bytes or the witness count.
     ///
     /// This function's internal arithmetic saturates at u32::MAX, so the return value of this
     /// function may be inaccurate for extremely large witness predictions.
@@ -1149,7 +1199,7 @@ impl InputWeightPrediction {
     /// See also [`InputWeightPrediction::total_weight`]
     pub const fn witness_weight(&self) -> Weight {
         let wu = self.script_size * 4 + self.witness_size;
-        let wu = wu as u64; // Can't use `ToU64` in const context.
+        let wu = const_casts::u32_to_u64(wu);
         Weight::from_wu(wu)
     }
 }
@@ -1162,7 +1212,7 @@ internals::transparent_newtype! {
     pub struct Coinbase(Transaction);
 
     impl Coinbase {
-        /// Creates a reference to `Coinbase` from a reference to the inner `Transaction`.
+        /// Constructs a reference to `Coinbase` from a reference to the inner `Transaction`.
         ///
         /// This method does not validate that the transaction is actually a coinbase transaction.
         /// The caller must ensure that the transaction is indeed a valid coinbase transaction
@@ -1171,7 +1221,7 @@ internals::transparent_newtype! {
 }
 
 impl Coinbase {
-    /// Creates a `Coinbase` wrapper assuming this transaction is a coinbase transaction.
+    /// Constructs a `Coinbase` wrapper assuming this transaction is a coinbase transaction.
     ///
     /// This method does not validate that the transaction is actually a coinbase transaction.
     /// The caller must ensure that this transaction is indeed a valid coinbase transaction.
@@ -1181,7 +1231,7 @@ impl Coinbase {
     ///
     /// This method is infallible because a valid coinbase transaction is guaranteed
     /// to have exactly one input.
-    pub fn first_input(&self) -> &TxIn { &self.0.input[0] }
+    pub fn first_input(&self) -> &TxIn { &self.0.inputs[0] }
 
     /// Returns a reference to the underlying transaction.
     ///
@@ -1220,21 +1270,21 @@ mod sealed {
 impl<'a> Arbitrary<'a> for InputWeightPrediction {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         match u.int_in_range(0..=7)? {
-            0 => Ok(InputWeightPrediction::P2WPKH_MAX),
-            1 => Ok(InputWeightPrediction::NESTED_P2WPKH_MAX),
-            2 => Ok(InputWeightPrediction::P2PKH_COMPRESSED_MAX),
-            3 => Ok(InputWeightPrediction::P2PKH_UNCOMPRESSED_MAX),
-            4 => Ok(InputWeightPrediction::P2TR_KEY_DEFAULT_SIGHASH),
-            5 => Ok(InputWeightPrediction::P2TR_KEY_NON_DEFAULT_SIGHASH),
+            0 => Ok(Self::P2WPKH_MAX),
+            1 => Ok(Self::NESTED_P2WPKH_MAX),
+            2 => Ok(Self::P2PKH_COMPRESSED_MAX),
+            3 => Ok(Self::P2PKH_UNCOMPRESSED_MAX),
+            4 => Ok(Self::P2TR_KEY_DEFAULT_SIGHASH),
+            5 => Ok(Self::P2TR_KEY_NON_DEFAULT_SIGHASH),
             6 => {
                 let input_script_len = usize::arbitrary(u)?;
                 let witness_element_lengths: Vec<usize> = Vec::arbitrary(u)?;
-                Ok(InputWeightPrediction::new(input_script_len, witness_element_lengths))
+                Ok(Self::new(input_script_len, witness_element_lengths))
             }
             _ => {
                 let input_script_len = usize::arbitrary(u)?;
                 let witness_element_lengths: Vec<usize> = Vec::arbitrary(u)?;
-                Ok(InputWeightPrediction::from_slice(input_script_len, &witness_element_lengths))
+                Ok(Self::from_slice(input_script_len, &witness_element_lengths))
             }
         }
     }
@@ -1244,13 +1294,12 @@ impl<'a> Arbitrary<'a> for InputWeightPrediction {
 mod tests {
     use hex::FromHex;
     use hex_lit::hex;
-    #[cfg(feature = "serde")]
-    use internals::serde_round_trip;
-    use units::parse;
 
     use super::*;
     use crate::consensus::encode::{deserialize, serialize};
     use crate::constants::WITNESS_SCALE_FACTOR;
+    use crate::parse_int;
+    use crate::script::ScriptSigBuf;
     use crate::sighash::EcdsaSighashType;
 
     const SOME_TX: &str = "0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000";
@@ -1309,7 +1358,7 @@ mod tests {
         assert_eq!(
             "5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456:lol"
                 .parse::<OutPoint>(),
-            Err(ParseOutPointError::Vout(parse::int_from_str::<u32>("lol").unwrap_err()))
+            Err(ParseOutPointError::Vout(parse_int::int_from_str::<u32>("lol").unwrap_err()))
         );
 
         assert_eq!(
@@ -1361,15 +1410,15 @@ mod tests {
         // All these tests aren't really needed because if they fail, the hash check at the end
         // will also fail. But these will show you where the failure is so I'll leave them in.
         assert_eq!(realtx.version, Version::ONE);
-        assert_eq!(realtx.input.len(), 1);
+        assert_eq!(realtx.inputs.len(), 1);
         // In particular this one is easy to get backward -- in bitcoin hashes are encoded
         // as little-endian 256-bit numbers rather than as data strings.
         assert_eq!(
-            format!("{:x}", realtx.input[0].previous_output.txid),
+            format!("{:x}", realtx.inputs[0].previous_output.txid),
             "ce9ea9f6f5e422c6a9dbcddb3b9a14d1c78fab9ab520cb281aa2a74a09575da1".to_string()
         );
-        assert_eq!(realtx.input[0].previous_output.vout, 1);
-        assert_eq!(realtx.output.len(), 1);
+        assert_eq!(realtx.inputs[0].previous_output.vout, 1);
+        assert_eq!(realtx.outputs.len(), 1);
         assert_eq!(realtx.lock_time, absolute::LockTime::ZERO);
 
         assert_eq!(
@@ -1409,15 +1458,15 @@ mod tests {
         // All these tests aren't really needed because if they fail, the hash check at the end
         // will also fail. But these will show you where the failure is so I'll leave them in.
         assert_eq!(realtx.version, Version::TWO);
-        assert_eq!(realtx.input.len(), 1);
+        assert_eq!(realtx.inputs.len(), 1);
         // In particular this one is easy to get backward -- in bitcoin hashes are encoded
         // as little-endian 256-bit numbers rather than as data strings.
         assert_eq!(
-            format!("{:x}", realtx.input[0].previous_output.txid),
+            format!("{:x}", realtx.inputs[0].previous_output.txid),
             "7cac3cf9a112cf04901a51d605058615d56ffe6d04b45270e89d1720ea955859".to_string()
         );
-        assert_eq!(realtx.input[0].previous_output.vout, 1);
-        assert_eq!(realtx.output.len(), 1);
+        assert_eq!(realtx.inputs[0].previous_output.vout, 1);
+        assert_eq!(realtx.outputs.len(), 1);
         assert_eq!(realtx.lock_time, absolute::LockTime::ZERO);
 
         assert_eq!(
@@ -1438,7 +1487,7 @@ mod tests {
 
         // Construct a transaction without the witness data.
         let mut tx_without_witness = realtx;
-        tx_without_witness.input.iter_mut().for_each(|input| input.witness.clear());
+        tx_without_witness.inputs.iter_mut().for_each(|input| input.witness.clear());
         assert_eq!(tx_without_witness.total_size(), tx_without_witness.total_size());
         assert_eq!(tx_without_witness.total_size(), expected_strippedsize);
     }
@@ -1478,8 +1527,8 @@ mod tests {
         );
         let tx: Transaction = deserialize(&tx_bytes).expect("deserialize tx");
 
-        assert_eq!(tx.input.len(), 0);
-        assert_eq!(tx.output.len(), 1);
+        assert_eq!(tx.inputs.len(), 0);
+        assert_eq!(tx.outputs.len(), 1);
 
         let reser = serialize(&tx);
         assert_eq!(tx_bytes, *reser);
@@ -1496,10 +1545,10 @@ mod tests {
             "c3573dbea28ce24425c59a189391937e00d255150fa973d59d61caf3a06b601d"
         );
         // changing sigs does not affect it
-        tx.input[0].script_sig = ScriptBuf::new();
+        tx.inputs[0].script_sig = ScriptSigBuf::new();
         assert_eq!(old_ntxid, tx.compute_ntxid());
         // changing pks does
-        tx.output[0].script_pubkey = ScriptBuf::new();
+        tx.outputs[0].script_pubkey = ScriptPubKeyBuf::new();
         assert!(old_ntxid != tx.compute_ntxid());
     }
 
@@ -1571,28 +1620,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "serde")]
-    fn txn_encode_decode() {
-        let tx_bytes = hex!("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000");
-        let tx: Transaction = deserialize(&tx_bytes).unwrap();
-        serde_round_trip!(tx);
-    }
-
-    // Test decoding transaction `4be105f158ea44aec57bf12c5817d073a712ab131df6f37786872cfc70734188`
-    // from testnet, which is the first BIP144-encoded transaction I encountered.
-    #[test]
-    #[cfg(feature = "serde")]
-    fn segwit_tx_decode() {
-        let tx_bytes = hex!("010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff3603da1b0e00045503bd5704c7dd8a0d0ced13bb5785010800000000000a636b706f6f6c122f4e696e6a61506f6f6c2f5345475749542fffffffff02b4e5a212000000001976a914876fbb82ec05caa6af7a3b5e5a983aae6c6cc6d688ac0000000000000000266a24aa21a9edf91c46b49eb8a29089980f02ee6b57e7d63d33b18b4fddac2bcd7db2a39837040120000000000000000000000000000000000000000000000000000000000000000000000000");
-        let tx: Transaction = deserialize(&tx_bytes).unwrap();
-        assert_eq!(tx.weight(), Weight::from_wu(780));
-        serde_round_trip!(tx);
-
-        let consensus_encoded = serialize(&tx);
-        assert_eq!(consensus_encoded, tx_bytes);
-    }
-
-    #[test]
     fn sighashtype_fromstr_display() {
         let sighashtypes = [
             ("SIGHASH_ALL", EcdsaSighashType::All),
@@ -1660,7 +1687,7 @@ mod tests {
         spending
             .verify(|point: &OutPoint| {
                 if let Some(tx) = spent.remove(&point.txid) {
-                    return tx.output.get(point.vout as usize).cloned();
+                    return tx.outputs.get(point.vout as usize).cloned();
                 }
                 None
             })
@@ -1668,27 +1695,27 @@ mod tests {
 
         // test that we fail with repeated use of same input
         let mut double_spending = spending.clone();
-        let re_use = double_spending.input[0].clone();
-        double_spending.input.push(re_use);
+        let re_use = double_spending.inputs[0].clone();
+        double_spending.inputs.push(re_use);
 
         assert!(double_spending
             .verify(|point: &OutPoint| {
                 if let Some(tx) = spent2.remove(&point.txid) {
-                    return tx.output.get(point.vout as usize).cloned();
+                    return tx.outputs.get(point.vout as usize).cloned();
                 }
                 None
             })
             .is_err());
 
         // test that we get a failure if we corrupt a signature
-        let mut witness = spending.input[1].witness.to_vec();
+        let mut witness = spending.inputs[1].witness.to_vec();
         witness[0][10] = 42;
-        spending.input[1].witness = Witness::from_slice(&witness);
+        spending.inputs[1].witness = Witness::from_slice(&witness);
 
         let error = spending
             .verify(|point: &OutPoint| {
                 if let Some(tx) = spent3.remove(&point.txid) {
-                    return tx.output.get(point.vout as usize).cloned();
+                    return tx.outputs.get(point.vout as usize).cloned();
                 }
                 None
             })
@@ -1794,8 +1821,8 @@ mod tests {
         let empty_transaction_weight = Transaction {
             version: Version::TWO,
             lock_time: absolute::LockTime::ZERO,
-            input: vec![],
-            output: vec![],
+            inputs: vec![],
+            outputs: vec![],
         }
         .weight();
 
@@ -1805,8 +1832,8 @@ mod tests {
             assert_eq!(*is_segwit, tx.uses_segwit_serialization());
 
             let mut calculated_weight = empty_transaction_weight
-                + tx.input.iter().fold(Weight::ZERO, |sum, i| sum + txin_weight(i))
-                + tx.output.iter().fold(Weight::ZERO, |sum, o| sum + o.weight());
+                + tx.inputs.iter().fold(Weight::ZERO, |sum, i| sum + txin_weight(i))
+                + tx.outputs.iter().fold(Weight::ZERO, |sum, o| sum + o.weight());
 
             // The empty tx uses SegWit serialization but a legacy tx does not.
             if !tx.uses_segwit_serialization() {
@@ -2036,7 +2063,7 @@ mod tests {
     }
 
     #[test]
-    // needless_borrows_for_generic_args incorrecctly identifies &[] as a needless borrow
+    // needless_borrows_for_generic_args incorrectly identifies &[] as a needless borrow
     #[allow(clippy::needless_borrows_for_generic_args)]
     fn weight_prediction_new() {
         let p2wpkh_max = InputWeightPrediction::new(0, [72, 33]);
@@ -2092,12 +2119,7 @@ mod tests {
     }
 
     #[test]
-    fn sequence_debug_output() {
-        let seq = Sequence::from_seconds_floor(1000);
-        println!("{:?}", seq)
-    }
 
-    #[test]
     fn outpoint_format() {
         let outpoint = OutPoint::COINBASE_PREVOUT;
 
@@ -2137,66 +2159,5 @@ mod tests {
         let coinbase_owned = Coinbase::assume_coinbase(coinbase_tx.clone());
         assert_eq!(coinbase_owned.compute_txid(), coinbase_tx.compute_txid());
         assert_eq!(coinbase_owned.wtxid(), Wtxid::COINBASE);
-    }
-}
-
-#[cfg(bench)]
-mod benches {
-    use io::sink;
-    use test::{black_box, Bencher};
-
-    use super::*;
-    use crate::consensus::{encode, Encodable};
-
-    const SOME_TX: &str = "0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000";
-
-    #[bench]
-    pub fn bench_transaction_size(bh: &mut Bencher) {
-        let mut tx: Transaction = encode::deserialize_hex(SOME_TX).unwrap();
-
-        bh.iter(|| {
-            black_box(black_box(&mut tx).total_size());
-        });
-    }
-
-    #[bench]
-    pub fn bench_transaction_serialize(bh: &mut Bencher) {
-        let tx: Transaction = encode::deserialize_hex(SOME_TX).unwrap();
-        let mut data = Vec::with_capacity(SOME_TX.len());
-
-        bh.iter(|| {
-            let result = tx.consensus_encode(&mut data);
-            black_box(&result);
-            data.clear();
-        });
-    }
-
-    #[bench]
-    pub fn bench_transaction_serialize_logic(bh: &mut Bencher) {
-        let tx: Transaction = encode::deserialize_hex(SOME_TX).unwrap();
-
-        bh.iter(|| {
-            let size = tx.consensus_encode(&mut sink());
-            black_box(&size);
-        });
-    }
-
-    #[bench]
-    pub fn bench_transaction_deserialize(bh: &mut Bencher) {
-        // hex_lit does not work in bench code for some reason. Perhaps criterion fixes this.
-        let raw_tx = <Vec<u8> as hex::FromHex>::from_hex(SOME_TX).unwrap();
-
-        bh.iter(|| {
-            let tx: Transaction = encode::deserialize(&raw_tx).unwrap();
-            black_box(&tx);
-        });
-    }
-
-    #[bench]
-    pub fn bench_transaction_deserialize_hex(bh: &mut Bencher) {
-        bh.iter(|| {
-            let tx: Transaction = encode::deserialize_hex(SOME_TX).unwrap();
-            black_box(&tx);
-        });
     }
 }

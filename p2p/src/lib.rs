@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! # Rust Bitcoin Peer to Peer Message Types
+//! Rust Bitcoin Peer to Peer Message Types
 
-// Experimental features we need.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![no_std]
 // Coding conventions.
 #![warn(missing_docs)]
 #![warn(deprecated_in_future)]
@@ -13,24 +12,34 @@
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
-pub mod address;
 mod consensus;
+mod network_ext;
+
+#[cfg(feature = "std")]
+pub mod address;
+#[cfg(feature = "std")]
 pub mod message;
 pub mod message_blockdata;
 pub mod message_bloom;
 pub mod message_compact_blocks;
 pub mod message_filter;
+#[cfg(feature = "std")]
 pub mod message_network;
-mod network_ext;
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use core::borrow::{Borrow, BorrowMut};
 use core::str::FromStr;
 use core::{fmt, ops};
-use std::borrow::{Borrow, BorrowMut, ToOwned};
 
+#[cfg(feature = "arbitrary")]
+use arbitrary::{Arbitrary, Unstructured};
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
 use bitcoin::network::{Network, Params, TestnetVersion};
 use hex::FromHex;
@@ -39,9 +48,14 @@ use io::{BufRead, Write};
 
 #[rustfmt::skip]
 #[doc(inline)]
-pub use self::{address::Address, network_ext::NetworkExt};
+pub use self::network_ext::NetworkExt;
 
-/// Version of the protocol as appearing in network message headers.
+#[cfg(feature = "std")]
+#[rustfmt::skip]
+#[doc(inline)]
+pub use self::{address::Address, message::CheckedData};
+
+/// Version of the protocol as appearing in network version handshakes and some message headers.
 ///
 /// This constant is used to signal to other peers which features you support. Increasing it implies
 /// that your software also supports every feature prior to this version. Doing so without support
@@ -58,7 +72,48 @@ pub use self::{address::Address, network_ext::NetworkExt};
 /// 70001 - Support bloom filter messages `filterload`, `filterclear` `filteradd`, `merkleblock` and FILTERED_BLOCK inventory type
 /// 60002 - Support `mempool` message
 /// 60001 - Support `pong` message and nonce in `ping` message
-pub const PROTOCOL_VERSION: u32 = 70001;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProtocolVersion(u32);
+
+impl ProtocolVersion {
+    /// Support receiving `wtxidrelay` message between `version` and `verack` message
+    pub const WTXID_RELAY_VERSION: Self = Self(70016);
+    /// Support receiving invalid compact blocks from a peer without banning them
+    pub const INVALID_CB_NO_BAN_VERSION: Self = Self(70015);
+    /// Support compact block messages `sendcmpct`, `cmpctblock`, `getblocktxn` and `blocktxn`
+    pub const SHORT_IDS_BLOCKS_VERSION: Self = Self(70014);
+    /// Support `feefilter` message
+    pub const FEEFILTER_VERSION: Self = Self(70013);
+    /// Support `sendheaders` message and announce new blocks via headers rather than inv
+    pub const SENDHEADERS_VERSION: Self = Self(70012);
+    /// Support `pong` message and nonce in `ping` message
+    pub const BIP0031_VERSION: Self = Self(60001);
+    /// All connections will be terminated below this version.
+    pub const MIN_PEER_PROTO_VERSION: Self = Self(31800);
+}
+
+impl ProtocolVersion {
+    /// Constructs a protocol version that is not well-known.
+    pub fn from_nonstandard(version: u32) -> Self { Self(version) }
+}
+
+impl From<ProtocolVersion> for u32 {
+    fn from(version: ProtocolVersion) -> Self { version.0 }
+}
+
+impl Encodable for ProtocolVersion {
+    #[inline]
+    fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
+        self.0.consensus_encode(w)
+    }
+}
+
+impl Decodable for ProtocolVersion {
+    #[inline]
+    fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
+        Ok(Self(Decodable::consensus_decode(r)?))
+    }
+}
 
 /// Flags to indicate which network services a node supports.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,39 +121,39 @@ pub struct ServiceFlags(u64);
 
 impl ServiceFlags {
     /// NONE means no services supported.
-    pub const NONE: ServiceFlags = ServiceFlags(0);
+    pub const NONE: Self = Self(0);
 
     /// NETWORK means that the node is capable of serving the complete block chain. It is currently
     /// set by all Bitcoin Core non pruned nodes, and is unset by SPV clients or other light
     /// clients.
-    pub const NETWORK: ServiceFlags = ServiceFlags(1 << 0);
+    pub const NETWORK: Self = Self(1 << 0);
 
     /// GETUTXO means the node is capable of responding to the getutxo protocol request. Bitcoin
     /// Core does not support this but a patch set called Bitcoin XT does.
-    /// See BIP 64 for details on how this is implemented.
-    pub const GETUTXO: ServiceFlags = ServiceFlags(1 << 1);
+    /// See BIP-0064 for details on how this is implemented.
+    pub const GETUTXO: Self = Self(1 << 1);
 
     /// BLOOM means the node is capable and willing to handle bloom-filtered connections. Bitcoin
     /// Core nodes used to support this by default, without advertising this bit, but no longer do
     /// as of protocol version 70011 (= NO_BLOOM_VERSION)
-    pub const BLOOM: ServiceFlags = ServiceFlags(1 << 2);
+    pub const BLOOM: Self = Self(1 << 2);
 
     /// WITNESS indicates that a node can be asked for blocks and transactions including witness
     /// data.
-    pub const WITNESS: ServiceFlags = ServiceFlags(1 << 3);
+    pub const WITNESS: Self = Self(1 << 3);
 
     /// COMPACT_FILTERS means the node will service basic block filter requests.
-    /// See BIP157 and BIP158 for details on how this is implemented.
-    pub const COMPACT_FILTERS: ServiceFlags = ServiceFlags(1 << 6);
+    /// See BIP-0157 and BIP-0158 for details on how this is implemented.
+    pub const COMPACT_FILTERS: Self = Self(1 << 6);
 
     /// NETWORK_LIMITED means the same as NODE_NETWORK with the limitation of only serving the last
     /// 288 (2 day) blocks.
-    /// See BIP159 for details on how this is implemented.
-    pub const NETWORK_LIMITED: ServiceFlags = ServiceFlags(1 << 10);
+    /// See BIP-0159 for details on how this is implemented.
+    pub const NETWORK_LIMITED: Self = Self(1 << 10);
 
     /// P2P_V2 indicates that the node supports the P2P v2 encrypted transport protocol.
-    /// See BIP324 for details on how this is implemented.
-    pub const P2P_V2: ServiceFlags = ServiceFlags(1 << 11);
+    /// See BIP-0324 for details on how this is implemented.
+    pub const P2P_V2: Self = Self(1 << 11);
 
     // NOTE: When adding new flags, remember to update the Display impl accordingly.
 
@@ -106,22 +161,22 @@ impl ServiceFlags {
     ///
     /// Returns itself.
     #[must_use]
-    pub fn add(&mut self, other: ServiceFlags) -> ServiceFlags {
+    pub fn add(&mut self, other: Self) -> Self {
         self.0 |= other.0;
         *self
     }
 
-    /// Remove [ServiceFlags] from this.
+    /// Removes [ServiceFlags] from this.
     ///
     /// Returns itself.
     #[must_use]
-    pub fn remove(&mut self, other: ServiceFlags) -> ServiceFlags {
+    pub fn remove(&mut self, other: Self) -> Self {
         self.0 &= !other.0;
         *self
     }
 
-    /// Check whether [ServiceFlags] are included in this one.
-    pub fn has(self, flags: ServiceFlags) -> bool { (self.0 | flags.0) == self.0 }
+    /// Checks whether [ServiceFlags] are included in this one.
+    pub fn has(self, flags: Self) -> bool { (self.0 | flags.0) == self.0 }
 
     /// Gets the integer representation of this [`ServiceFlags`].
     pub fn to_u64(self) -> u64 { self.0 }
@@ -140,7 +195,7 @@ impl fmt::UpperHex for ServiceFlags {
 impl fmt::Display for ServiceFlags {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut flags = *self;
-        if flags == ServiceFlags::NONE {
+        if flags == Self::NONE {
             return write!(f, "ServiceFlags(NONE)");
         }
         let mut first = true;
@@ -165,7 +220,7 @@ impl fmt::Display for ServiceFlags {
         write_flag!(NETWORK_LIMITED);
         write_flag!(P2P_V2);
         // If there are unknown flags left, we append them in hex.
-        if flags != ServiceFlags::NONE {
+        if flags != Self::NONE {
             if !first {
                 write!(f, "|")?;
             }
@@ -176,7 +231,7 @@ impl fmt::Display for ServiceFlags {
 }
 
 impl From<u64> for ServiceFlags {
-    fn from(f: u64) -> Self { ServiceFlags(f) }
+    fn from(f: u64) -> Self { Self(f) }
 }
 
 impl From<ServiceFlags> for u64 {
@@ -213,7 +268,7 @@ impl Encodable for ServiceFlags {
 impl Decodable for ServiceFlags {
     #[inline]
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-        Ok(ServiceFlags(Decodable::consensus_decode(r)?))
+        Ok(Self(Decodable::consensus_decode(r)?))
     }
 }
 /// Network magic bytes to identify the cryptocurrency network the message was intended for.
@@ -224,9 +279,6 @@ impl Magic {
     /// Bitcoin mainnet network magic bytes.
     pub const BITCOIN: Self = Self([0xF9, 0xBE, 0xB4, 0xD9]);
     /// Bitcoin testnet3 network magic bytes.
-    #[deprecated(since = "0.33.0", note = "use `TESTNET3` instead")]
-    pub const TESTNET: Self = Self([0x0B, 0x11, 0x09, 0x07]);
-    /// Bitcoin testnet3 network magic bytes.
     pub const TESTNET3: Self = Self([0x0B, 0x11, 0x09, 0x07]);
     /// Bitcoin testnet4 network magic bytes.
     pub const TESTNET4: Self = Self([0x1c, 0x16, 0x3f, 0x28]);
@@ -235,10 +287,10 @@ impl Magic {
     /// Bitcoin regtest network magic bytes.
     pub const REGTEST: Self = Self([0xFA, 0xBF, 0xB5, 0xDA]);
 
-    /// Construct a new network magic from bytes.
-    pub const fn from_bytes(bytes: [u8; 4]) -> Magic { Magic(bytes) }
+    /// Constructs a new network magic from bytes.
+    pub const fn from_bytes(bytes: [u8; 4]) -> Self { Self(bytes) }
 
-    /// Get network magic bytes.
+    /// Gets network magic bytes.
     pub fn to_bytes(self) -> [u8; 4] { self.0 }
 
     /// Returns the magic bytes for the network defined by `params`.
@@ -250,9 +302,9 @@ impl Magic {
 impl FromStr for Magic {
     type Err = ParseMagicError;
 
-    fn from_str(s: &str) -> Result<Magic, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match <[u8; 4]>::from_hex(s) {
-            Ok(magic) => Ok(Magic::from_bytes(magic)),
+            Ok(magic) => Ok(Self::from_bytes(magic)),
             Err(e) => Err(ParseMagicError { error: e, magic: s.to_owned() }),
         }
     }
@@ -263,11 +315,11 @@ impl TryFrom<Network> for Magic {
 
     fn try_from(network: Network) -> Result<Self, Self::Error> {
         match network {
-            Network::Bitcoin => Ok(Magic::BITCOIN),
-            Network::Testnet(TestnetVersion::V3) => Ok(Magic::TESTNET3),
-            Network::Testnet(TestnetVersion::V4) => Ok(Magic::TESTNET4),
-            Network::Signet => Ok(Magic::SIGNET),
-            Network::Regtest => Ok(Magic::REGTEST),
+            Network::Bitcoin => Ok(Self::BITCOIN),
+            Network::Testnet(TestnetVersion::V3) => Ok(Self::TESTNET3),
+            Network::Testnet(TestnetVersion::V4) => Ok(Self::TESTNET4),
+            Network::Signet => Ok(Self::SIGNET),
+            Network::Regtest => Ok(Self::REGTEST),
             _ => Err(UnknownNetworkError(network)),
         }
     }
@@ -278,11 +330,11 @@ impl TryFrom<Magic> for Network {
 
     fn try_from(magic: Magic) -> Result<Self, Self::Error> {
         match magic {
-            Magic::BITCOIN => Ok(Network::Bitcoin),
-            Magic::TESTNET3 => Ok(Network::Testnet(TestnetVersion::V3)),
-            Magic::TESTNET4 => Ok(Network::Testnet(TestnetVersion::V4)),
-            Magic::SIGNET => Ok(Network::Signet),
-            Magic::REGTEST => Ok(Network::Regtest),
+            Magic::BITCOIN => Ok(Self::Bitcoin),
+            Magic::TESTNET3 => Ok(Self::Testnet(TestnetVersion::V3)),
+            Magic::TESTNET4 => Ok(Self::Testnet(TestnetVersion::V4)),
+            Magic::SIGNET => Ok(Self::Signet),
+            Magic::REGTEST => Ok(Self::Regtest),
             _ => Err(UnknownMagicError(magic)),
         }
     }
@@ -322,7 +374,7 @@ impl Encodable for Magic {
 
 impl Decodable for Magic {
     fn consensus_decode<R: BufRead + ?Sized>(reader: &mut R) -> Result<Self, encode::Error> {
-        Ok(Magic(Decodable::consensus_decode(reader)?))
+        Ok(Self(Decodable::consensus_decode(reader)?))
     }
 }
 
@@ -374,6 +426,7 @@ impl fmt::Display for ParseMagicError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for ParseMagicError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.error) }
 }
@@ -389,6 +442,7 @@ impl fmt::Display for UnknownMagicError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for UnknownMagicError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
@@ -404,12 +458,34 @@ impl fmt::Display for UnknownNetworkError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for UnknownNetworkError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for ProtocolVersion {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self(u.arbitrary()?))
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for ServiceFlags {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self(u.arbitrary()?))
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for Magic {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> { Ok(Self(u.arbitrary()?)) }
+}
+
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use bitcoin::consensus::encode::{deserialize, serialize};
 
     use super::*;

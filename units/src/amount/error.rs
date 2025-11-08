@@ -137,8 +137,9 @@ impl fmt::Display for ParseAmountError {
             E::TooPrecise(ref error) => write_err!(f, "amount has a too high precision"; error),
             E::MissingDigits(ref error) => write_err!(f, "the input has too few digits"; error),
             E::InputTooLarge(ref error) => write_err!(f, "the input is too large"; error),
-            E::InvalidCharacter(ref error) =>
-                write_err!(f, "invalid character in the input"; error),
+            E::InvalidCharacter(ref error) => {
+                write_err!(f, "invalid character in the input"; error)
+            }
         }
     }
 }
@@ -218,7 +219,7 @@ impl std::error::Error for OutOfRangeError {}
 
 impl From<OutOfRangeError> for ParseAmountError {
     fn from(value: OutOfRangeError) -> Self {
-        ParseAmountError(ParseAmountErrorInner::OutOfRange(value))
+        Self(ParseAmountErrorInner::OutOfRange(value))
     }
 }
 
@@ -388,4 +389,60 @@ impl fmt::Display for PossiblyConfusingDenominationError {
 #[cfg(feature = "std")]
 impl std::error::Error for PossiblyConfusingDenominationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
+}
+
+/// An error consensus decoding an `Amount`.
+#[cfg(feature = "encoding")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmountDecoderError(pub(super) AmountDecoderErrorInner);
+
+#[cfg(feature = "encoding")]
+impl AmountDecoderError {
+    /// Constructs an EOF error.
+    pub(super) fn eof(e: encoding::UnexpectedEofError) -> Self {
+        Self(AmountDecoderErrorInner::UnexpectedEof(e))
+    }
+
+    /// Constructs an out of range (`Amount::from_sat`) error.
+    pub(super) fn out_of_range(e: OutOfRangeError) -> Self {
+        Self(AmountDecoderErrorInner::OutOfRange(e))
+    }
+}
+
+#[cfg(feature = "encoding")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AmountDecoderErrorInner {
+    /// Not enough bytes given to decoder.
+    UnexpectedEof(encoding::UnexpectedEofError),
+    /// Decoded amount is too big.
+    OutOfRange(OutOfRangeError),
+}
+
+#[cfg(feature = "encoding")]
+impl From<Infallible> for AmountDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+#[cfg(feature = "encoding")]
+impl fmt::Display for AmountDecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use AmountDecoderErrorInner as E;
+
+        match self.0 {
+            E::UnexpectedEof(ref e) => write_err!(f, "decode error"; e),
+            E::OutOfRange(ref e) => write_err!(f, "decode error"; e),
+        }
+    }
+}
+
+#[cfg(all(feature = "std", feature = "encoding"))]
+impl std::error::Error for AmountDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use AmountDecoderErrorInner as E;
+
+        match self.0 {
+            E::UnexpectedEof(ref e) => Some(e),
+            E::OutOfRange(ref e) => Some(e),
+        }
+    }
 }

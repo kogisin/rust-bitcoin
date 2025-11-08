@@ -2,7 +2,7 @@
 
 //! Useful comparison functions.
 
-/// Compare two slices for equality in fixed time. Panics if the slices are of non-equal length.
+/// Compares two slices for equality in fixed time. Panics if the slices are of non-equal length.
 ///
 /// This works by XOR'ing each byte of the two inputs together and keeping an OR counter of the
 /// results.
@@ -100,70 +100,5 @@ mod tests {
         assert!(!fixed_time_eq(&[0b00000000, 0b00000001], &[0b00000000, 0b00000000]));
         assert!(!fixed_time_eq(&[0b00000000, 0b00000000], &[0b00000001, 0b00000000]));
         assert!(!fixed_time_eq(&[0b00000000, 0b00000000], &[0b00000001, 0b00000001]));
-    }
-}
-
-#[cfg(bench)]
-#[cfg(feature = "hex")]
-mod benches {
-    use test::Bencher;
-
-    use crate::cmp::fixed_time_eq;
-    use crate::{sha256, sha512, Hash};
-
-    #[bench]
-    fn bench_32b_constant_time_cmp_ne(bh: &mut Bencher) {
-        let hash_a = sha256::Hash::hash(&[0; 1]);
-        let hash_b = sha256::Hash::hash(&[1; 1]);
-        bh.iter(|| fixed_time_eq(hash_a.as_byte_array(), hash_b.as_byte_array()))
-    }
-
-    #[bench]
-    fn bench_32b_slice_cmp_ne(bh: &mut Bencher) {
-        let hash_a = sha256::Hash::hash(&[0; 1]);
-        let hash_b = sha256::Hash::hash(&[1; 1]);
-        bh.iter(|| hash_a.as_byte_array() == hash_b.as_byte_array())
-    }
-
-    #[bench]
-    fn bench_32b_constant_time_cmp_eq(bh: &mut Bencher) {
-        let hash_a = sha256::Hash::hash(&[0; 1]);
-        let hash_b = sha256::Hash::hash(&[0; 1]);
-        bh.iter(|| fixed_time_eq(hash_a.as_byte_array(), hash_b.as_byte_array()))
-    }
-
-    #[bench]
-    fn bench_32b_slice_cmp_eq(bh: &mut Bencher) {
-        let hash_a = sha256::Hash::hash(&[0; 1]);
-        let hash_b = sha256::Hash::hash(&[0; 1]);
-        bh.iter(|| hash_a.as_byte_array() == hash_b.as_byte_array())
-    }
-
-    #[bench]
-    fn bench_64b_constant_time_cmp_ne(bh: &mut Bencher) {
-        let hash_a = sha512::Hash::hash(&[0; 1]);
-        let hash_b = sha512::Hash::hash(&[1; 1]);
-        bh.iter(|| fixed_time_eq(hash_a.as_byte_array(), hash_b.as_byte_array()))
-    }
-
-    #[bench]
-    fn bench_64b_slice_cmp_ne(bh: &mut Bencher) {
-        let hash_a = sha512::Hash::hash(&[0; 1]);
-        let hash_b = sha512::Hash::hash(&[1; 1]);
-        bh.iter(|| hash_a.as_byte_array() == hash_b.as_byte_array())
-    }
-
-    #[bench]
-    fn bench_64b_constant_time_cmp_eq(bh: &mut Bencher) {
-        let hash_a = sha512::Hash::hash(&[0; 1]);
-        let hash_b = sha512::Hash::hash(&[0; 1]);
-        bh.iter(|| fixed_time_eq(hash_a.as_byte_array(), hash_b.as_byte_array()))
-    }
-
-    #[bench]
-    fn bench_64b_slice_cmp_eq(bh: &mut Bencher) {
-        let hash_a = sha512::Hash::hash(&[0; 1]);
-        let hash_b = sha512::Hash::hash(&[0; 1]);
-        bh.iter(|| hash_a.as_byte_array() == hash_b.as_byte_array())
     }
 }

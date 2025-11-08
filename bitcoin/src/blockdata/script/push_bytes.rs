@@ -9,7 +9,7 @@ use crate::script;
 
 #[rustfmt::skip]                // Keep public re-exports separate.
 #[doc(inline)]
-// This is not the usual re-export, `primitive` here is an code audit thing.
+// This is not the usual re-export, `primitive` here is a code audit thing.
 pub use self::primitive::{PushBytes, PushBytesBuf};
 
 /// This module only contains required operations so that outside functions wouldn't accidentally
@@ -167,13 +167,13 @@ mod primitive {
 
                 impl From<[u8; $len]> for PushBytesBuf {
                     fn from(bytes: [u8; $len]) -> Self {
-                        PushBytesBuf(Vec::from(&bytes as &[_]))
+                        PushBytesBuf(Vec::from(&bytes))
                     }
                 }
 
                 impl<'a> From<&'a [u8; $len]> for PushBytesBuf {
                     fn from(bytes: &'a [u8; $len]) -> Self {
-                        PushBytesBuf(Vec::from(bytes as &[_]))
+                        PushBytesBuf(Vec::from(bytes))
                     }
                 }
             )*
@@ -195,10 +195,10 @@ mod primitive {
     impl PushBytesBuf {
         /// Constructs an empty `PushBytesBuf`.
         #[inline]
-        pub const fn new() -> Self { PushBytesBuf(Vec::new()) }
+        pub const fn new() -> Self { Self(Vec::new()) }
 
         /// Constructs an empty `PushBytesBuf` with reserved capacity.
-        pub fn with_capacity(capacity: usize) -> Self { PushBytesBuf(Vec::with_capacity(capacity)) }
+        pub fn with_capacity(capacity: usize) -> Self { Self(Vec::with_capacity(capacity)) }
 
         /// Reserve capacity for `additional_capacity` bytes.
         pub fn reserve(&mut self, additional_capacity: usize) {
@@ -273,7 +273,7 @@ mod primitive {
         fn try_from(vec: Vec<u8>) -> Result<Self, Self::Error> {
             // check len
             let _: &PushBytes = vec.as_slice().try_into()?;
-            Ok(PushBytesBuf(vec))
+            Ok(Self(vec))
         }
     }
 
@@ -361,12 +361,12 @@ impl DerefMut for PushBytesBuf {
     fn deref_mut(&mut self) -> &mut Self::Target { self.as_mut_push_bytes() }
 }
 
-impl AsRef<PushBytes> for PushBytes {
-    fn as_ref(&self) -> &PushBytes { self }
+impl AsRef<Self> for PushBytes {
+    fn as_ref(&self) -> &Self { self }
 }
 
-impl AsMut<PushBytes> for PushBytes {
-    fn as_mut(&mut self) -> &mut PushBytes { self }
+impl AsMut<Self> for PushBytes {
+    fn as_mut(&mut self) -> &mut Self { self }
 }
 
 impl AsRef<PushBytes> for PushBytesBuf {

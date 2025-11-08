@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! # Rust Bitcoin Library
+//! Rust Bitcoin Library
 //!
 //! This is a library that supports the Bitcoin network protocol and associated primitives. It is
 //! designed for Rust programs built to work with the Bitcoin network.
@@ -25,21 +25,18 @@
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 // Experimental features we need.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![cfg_attr(docsrs, feature(doc_notable_trait))]
-#![cfg_attr(bench, feature(test))]
 // Coding conventions.
 #![warn(missing_docs)]
 #![warn(deprecated_in_future)]
 #![doc(test(attr(warn(unused))))]
 // Instead of littering the codebase for non-fuzzing and bench code just globally allow.
 #![cfg_attr(fuzzing, allow(dead_code, unused_imports))]
-#![cfg_attr(bench, allow(dead_code, unused_imports))]
 // Exclude lints we don't think are valuable.
 #![allow(clippy::needless_question_mark)] // https://github.com/rust-bitcoin/rust-bitcoin/pull/2134
 #![allow(clippy::manual_range_contains)] // More readable than clippy's format.
 #![allow(clippy::incompatible_msrv)] // Has FPs and we're testing it which is more reliable anyway.
-#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)`instead of enforcing `format!("{x}")`
+#![allow(clippy::uninlined_format_args)] // Allow `format!("{}", x)` instead of enforcing `format!("{x}")`
 
 // We only support machines with index size of 4 bytes or more.
 //
@@ -55,9 +52,6 @@ internals::const_assert!(
     core::mem::size_of::<usize>() >= 4;
     "platforms that have usize less than 32 bits are not supported"
 );
-
-#[cfg(bench)]
-extern crate test;
 
 #[macro_use]
 extern crate alloc;
@@ -83,7 +77,7 @@ pub extern crate io;
 
 /// Re-export the `rust-secp256k1` crate.
 ///
-/// Rust wrapper library for Pieter Wuille's libsecp256k1. Implements ECDSA and BIP-340 signatures
+/// Rust wrapper library for Pieter Wuille's libsecp256k1. Implements ECDSA and BIP-0340 signatures
 /// for the SECG elliptic curve group secp256k1 and related utilities.
 pub extern crate secp256k1;
 
@@ -103,22 +97,23 @@ pub mod ext {
     //! # Examples
     //!
     //! ```
+    //! # #![allow(unused_imports)] // Because that is what we are demoing.
     //! // Wildcard import all of the extension crates.
     //! use bitcoin::ext::*;
     //!
     //! // If, for some reason, you want the name to be in scope access it via the module. E.g.
-    //! use bitcoin::script::ScriptExt;
+    //! use bitcoin::script::ScriptSigExt;
     //! ```
     #[rustfmt::skip] // Use terse custom grouping.
     pub use crate::{
         block::{BlockUncheckedExt as _, BlockCheckedExt as _, HeaderExt as _},
         pow::CompactTargetExt as _,
-        script::{ScriptExt as _, ScriptBufExt as _},
+        script::{ScriptExt as _, ScriptBufExt as _, TapScriptExt as _, ScriptPubKeyExt as _, ScriptPubKeyBufExt as _, WitnessScriptExt as _, ScriptSigExt as _},
         transaction::{TxidExt as _, WtxidExt as _, OutPointExt as _, TxInExt as _, TxOutExt as _, TransactionExt as _},
         witness::WitnessExt as _,
     };
     #[cfg(feature = "bitcoinconsensus")]
-    pub use crate::consensus_validation::{ScriptExt as _, TransactionExt as _};
+    pub use crate::consensus_validation::{ScriptPubKeyExt as _, TransactionExt as _};
 }
 #[macro_use]
 pub mod address;
@@ -151,7 +146,10 @@ pub use primitives::{
     },
     merkle_tree::{TxMerkleNode, WitnessMerkleNode},
     pow::CompactTarget, // No `pow` module outside of `primitives`.
-    script::{Script, ScriptBuf},
+    script::{
+        RedeemScript, RedeemScriptBuf, ScriptPubKey, ScriptPubKeyBuf, ScriptSig, ScriptSigBuf,
+        TapScript, TapScriptBuf, WitnessScript, WitnessScriptBuf,
+    },
     sequence::{self, Sequence}, // No `sequence` module outside of `primitives`.
     transaction::{OutPoint, Transaction, TxIn, TxOut, Txid, Version as TransactionVersion, Wtxid},
     witness::Witness,
@@ -159,8 +157,9 @@ pub use primitives::{
 #[doc(inline)]
 pub use units::{
     amount::{Amount, SignedAmount},
-    block::{BlockHeight, BlockHeightInterval, BlockMtp},
+    block::{BlockHeight, BlockHeightInterval, BlockMtp, BlockMtpInterval},
     fee_rate::FeeRate,
+    parse_int,
     time::{self, BlockTime},
     weight::Weight,
 };
@@ -229,20 +228,30 @@ pub mod amount {
     use crate::io::{BufRead, Write};
 
     #[rustfmt::skip]            // Keep public re-exports separate.
-    #[doc(inline)]
     #[cfg(feature = "serde")]
     pub use units::amount::serde;
+    #[doc(inline)]
+    pub use units::amount::{Amount, SignedAmount};
+    #[doc(no_inline)]
     pub use units::amount::{
-        Amount, Denomination, Display, InvalidCharacterError, MissingDenominationError,
-        MissingDigitsError, OutOfRangeError, ParseAmountError, ParseDenominationError, ParseError,
-        PossiblyConfusingDenominationError, SignedAmount, TooPreciseError,
-        UnknownDenominationError,
+        Denomination, Display, OutOfRangeError, ParseAmountError, ParseDenominationError,
+        ParseError,
     };
+
+    /// Error types for bitcoin amounts.
+    pub mod error {
+        pub use units::amount::error::{
+            InputTooLargeError, InvalidCharacterError, MissingDenominationError,
+            MissingDigitsError, OutOfRangeError, ParseAmountError, ParseDenominationError,
+            ParseError, PossiblyConfusingDenominationError, TooPreciseError,
+            UnknownDenominationError,
+        };
+    }
 
     impl Decodable for Amount {
         #[inline]
         fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
-            Amount::from_sat(Decodable::consensus_decode(r)?).map_err(|_| {
+            Self::from_sat(Decodable::consensus_decode(r)?).map_err(|_| {
                 consensus::parse_failed_error("amount is greater than Amount::MAX_MONEY")
             })
         }
@@ -256,25 +265,13 @@ pub mod amount {
     }
 }
 
-/// Unit parsing utilities.
-pub mod parse {
-    /// Re-export everything from the [`units::parse`] module.
-    #[doc(inline)]
-    pub use units::parse::{
-        hex_check_unprefixed, hex_remove_prefix, hex_u128, hex_u128_unchecked, hex_u128_unprefixed,
-        hex_u32, hex_u32_unchecked, hex_u32_unprefixed, int_from_box, int_from_str,
-        int_from_string, ParseIntError, PrefixedHexError, UnprefixedHexError,
-    };
-}
-
 mod encode_impls {
     //! Encodable/Decodable implementations.
     // While we are deprecating, re-exporting, and generally moving things around just put these here.
 
-    use units::{BlockHeight, BlockHeightInterval};
-
     use crate::consensus::{encode, Decodable, Encodable};
     use crate::io::{BufRead, Write};
+    use crate::{BlockHeight, BlockHeightInterval};
 
     /// Implements Encodable and Decodable for a simple wrapper type.
     ///

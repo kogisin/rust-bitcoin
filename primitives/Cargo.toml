@@ -1,9 +1,7 @@
 [package]
 name = "bitcoin-primitives"
-# Arbitrary high version number so as to not clash with the original
-# `bitcoin-primitives` crate that we replaced `v0.1.16-alpha`.
-version = "0.101.0"
-authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>"]
+version = "1.0.0-rc.0"
+authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>", "Tobin C. Harding <me@tobin.cc>"]
 license = "CC0-1.0"
 repository = "https://github.com/rust-bitcoin/rust-bitcoin"
 description = "Primitive types used by the rust-bitcoin ecosystem"
@@ -11,30 +9,33 @@ categories = ["cryptography::cryptocurrencies", "no-std"]
 keywords = ["bitcoin", "types"]
 readme = "README.md"
 edition = "2021"
-rust-version = "1.63.0"
+rust-version = "1.74.0"
 exclude = ["tests", "contrib"]
 
 [features]
 default = ["std", "hex"]
-std = ["alloc", "hashes/std", "hex?/std", "internals/std", "units/std", "arrayvec/std"]
-alloc = ["hashes/alloc", "hex?/alloc", "internals/alloc", "units/alloc"]
-serde = ["dep:serde", "hashes/serde", "hex?/serde", "internals/serde", "units/serde", "alloc", "hex"]
+std = ["alloc", "hashes/std", "hex-stable?/std", "hex-unstable?/std", "internals/std", "units/std", "arrayvec/std"]
+alloc = ["hashes/alloc", "hex-stable?/alloc", "hex-unstable?/alloc", "internals/alloc", "units/alloc"]
+serde = ["dep:serde", "hashes/serde", "internals/serde", "units/serde", "alloc", "hex"]
 arbitrary = ["dep:arbitrary", "units/arbitrary"]
-hex = ["dep:hex", "hashes/hex", "internals/hex"]
+hex = ["dep:hex-stable", "dep:hex-unstable", "hashes/hex", "internals/hex"]
 
 [dependencies]
-hashes = { package = "bitcoin_hashes", path = "../hashes", default-features = false }
-internals = { package = "bitcoin-internals", path = "../internals" }
-units = { package = "bitcoin-units", path = "../units", default-features = false }
-arrayvec = { version = "0.7", default-features = false }
+encoding = { package = "bitcoin-consensus-encoding", path = "../consensus_encoding", version = "1.0.0-rc.1", default-features = false }
+hashes = { package = "bitcoin_hashes", path = "../hashes", version = "0.17.0", default-features = false }
+internals = { package = "bitcoin-internals", path = "../internals", version = "0.4.1" }
+units = { package = "bitcoin-units", path = "../units", version = "1.0.0-rc.2", default-features = false, features = [ "encoding" ] }
+arrayvec = { version = "0.7.2", default-features = false }
 
-arbitrary = { version = "1.4", optional = true }
-hex = { package = "hex-conservative", version = "0.3.0", default-features = false, optional = true }
-serde = { version = "1.0.103", default-features = false, features = ["derive", "alloc"], optional = true }
+arbitrary = { version = "1.4.1", optional = true }
+hex-stable = { package = "hex-conservative", version = "1.0.0", default-features = false, optional = true }
+hex-unstable = { package = "hex-conservative", version = "0.3.0", default-features = false, optional = true }
+serde = { version = "1.0.195", default-features = false, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
-serde_json = "1.0.0"
+serde_json = "1.0.68"
 bincode = "1.3.1"
+hex_lit = "0.1.1"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -103,7 +104,6 @@ manual_string_new = "warn"
 many_single_char_names = "warn"
 map_unwrap_or = "warn"
 match_bool = "allow" # Adds extra indentation and LOC.
-match_on_vec_items = "warn"
 match_same_arms = "allow" # Collapses things that are conceptually unrelated to each other.
 match_wild_err_arm = "warn"
 match_wildcard_for_single_variants = "warn"
@@ -146,7 +146,7 @@ stable_sort_primitive = "warn"
 str_split_at_newline = "warn"
 string_add_assign = "warn"
 struct_excessive_bools = "warn"
-struct_field_names = "allow" # TODO: Triggers warning for `witness_elements`.
+struct_field_names = "allow" # dumb
 too_many_lines = "warn"
 transmute_ptr_to_ptr = "warn"
 trivially_copy_pass_by_ref = "warn"
@@ -157,11 +157,12 @@ unnecessary_box_returns = "warn"
 unnecessary_join = "warn"
 unnecessary_literal_bound = "warn"
 unnecessary_wraps = "warn"
-unnested_or_patterns = "allow"  # TODO
+unnested_or_patterns = "allow" # TODO: Consider enabling this lint.
 unreadable_literal = "warn"
 unsafe_derive_deserialize = "warn"
 unused_async = "warn"
 unused_self = "warn"
+use_self = "warn"
 used_underscore_binding = "warn"
 used_underscore_items = "warn"
 verbose_bit_mask = "warn"

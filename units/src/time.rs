@@ -7,8 +7,15 @@
 //! This differs from other UNIX timestamps in that we only use non-negative values. The Epoch
 //! pre-dates Bitcoin so timestamps before this are not useful for block timestamps.
 
+#[cfg(feature = "encoding")]
+use core::convert::Infallible;
+#[cfg(feature = "encoding")]
+use core::fmt;
+
 #[cfg(feature = "arbitrary")]
 use arbitrary::{Arbitrary, Unstructured};
+#[cfg(feature = "encoding")]
+use internals::write_err;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -31,7 +38,7 @@ mod encapsulate {
     impl BlockTime {
         /// Constructs a new [`BlockTime`] from an unsigned 32 bit integer value.
         #[inline]
-        pub const fn from_u32(t: u32) -> Self { BlockTime(t) }
+        pub const fn from_u32(t: u32) -> Self { Self(t) }
 
         /// Returns the inner `u32` value.
         #[inline]
@@ -73,12 +80,89 @@ impl<'de> Deserialize<'de> for BlockTime {
     }
 }
 
+#[cfg(feature = "encoding")]
+encoding::encoder_newtype! {
+    /// The encoder for the [`BlockTime`] type.
+    pub struct BlockTimeEncoder(encoding::ArrayEncoder<4>);
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Encodable for BlockTime {
+    type Encoder<'e> = BlockTimeEncoder;
+    fn encoder(&self) -> Self::Encoder<'_> {
+        BlockTimeEncoder(encoding::ArrayEncoder::without_length_prefix(self.to_u32().to_le_bytes()))
+    }
+}
+
+/// The decoder for the [`BlockTime`] type.
+#[cfg(feature = "encoding")]
+pub struct BlockTimeDecoder(encoding::ArrayDecoder<4>);
+
+#[cfg(feature = "encoding")]
+impl Default for BlockTimeDecoder {
+    fn default() -> Self { Self::new() }
+}
+
+#[cfg(feature = "encoding")]
+impl BlockTimeDecoder {
+    /// Constructs a new [`BlockTime`] decoder.
+    pub fn new() -> Self { Self(encoding::ArrayDecoder::new()) }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decoder for BlockTimeDecoder {
+    type Output = BlockTime;
+    type Error = BlockTimeDecoderError;
+
+    #[inline]
+    fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
+        self.0.push_bytes(bytes).map_err(BlockTimeDecoderError)
+    }
+
+    #[inline]
+    fn end(self) -> Result<Self::Output, Self::Error> {
+        let t = u32::from_le_bytes(self.0.end().map_err(BlockTimeDecoderError)?);
+        Ok(BlockTime::from_u32(t))
+    }
+
+    #[inline]
+    fn read_limit(&self) -> usize { self.0.read_limit() }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decodable for BlockTime {
+    type Decoder = BlockTimeDecoder;
+    fn decoder() -> Self::Decoder { BlockTimeDecoder(encoding::ArrayDecoder::<4>::new()) }
+}
+
+/// An error consensus decoding an `BlockTime`.
+#[cfg(feature = "encoding")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockTimeDecoderError(encoding::UnexpectedEofError);
+
+#[cfg(feature = "encoding")]
+impl From<Infallible> for BlockTimeDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+#[cfg(feature = "encoding")]
+impl fmt::Display for BlockTimeDecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write_err!(f, "block time decoder error"; self.0)
+    }
+}
+
+#[cfg(all(feature = "std", feature = "encoding"))]
+impl std::error::Error for BlockTimeDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+}
+
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for BlockTime {
     #[inline]
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let t: u32 = u.arbitrary()?;
-        Ok(BlockTime::from(t))
+        Ok(Self::from(t))
     }
 }
 

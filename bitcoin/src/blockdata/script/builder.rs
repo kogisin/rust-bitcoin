@@ -2,22 +2,25 @@
 
 use core::fmt;
 
-use primitives::relative;
-
-use super::{opcode_to_verify, write_scriptint, Error, PushBytes, Script, ScriptBuf};
+use super::{opcode_to_verify, Error, PushBytes, Script, ScriptBuf};
 use crate::key::{PublicKey, XOnlyPublicKey};
 use crate::locktime::absolute;
 use crate::opcodes::all::*;
 use crate::opcodes::Opcode;
 use crate::prelude::Vec;
 use crate::script::{ScriptBufExt as _, ScriptBufExtPriv as _, ScriptExtPriv as _};
-use crate::Sequence;
+use crate::{relative, Sequence};
 
 /// An Object which can be used to construct a script piece by piece.
+///
+/// # Panics
+///
+/// `Builder` is backed by [`ScriptBuf`] and inherits its panic behavior. This means that
+/// attempting to construct scripts larger than `isize::MAX` bytes will panic.
 #[derive(PartialEq, Eq, Clone)]
-pub struct Builder(ScriptBuf, Option<Opcode>);
+pub struct Builder<T>(ScriptBuf<T>, Option<Opcode>);
 
-impl Builder {
+impl<T> Builder<T> {
     /// Constructs a new empty script.
     #[inline]
     pub const fn new() -> Self { Self(ScriptBuf::new(), None) }
@@ -40,14 +43,7 @@ impl Builder {
     /// # Errors
     ///
     /// Only errors if `data == i32::MIN` (CScriptNum cannot have value -2^31).
-    pub fn push_int(self, n: i32) -> Result<Self, Error> {
-        if n == i32::MIN {
-            // ref: https://github.com/bitcoin/bitcoin/blob/cac846c2fbf6fc69bfc288fd387aa3f68d84d584/src/script/script.h#L230
-            Err(Error::NumericOverflow)
-        } else {
-            Ok(self.push_int_unchecked(n.into()))
-        }
-    }
+    pub fn push_int(mut self, n: i32) -> Result<Self, Error> { self.0.push_int(n).map(|_| self) }
 
     /// Adds instructions to push an unchecked integer onto the stack.
     ///
@@ -64,32 +60,27 @@ impl Builder {
     /// > throwing an exception if arithmetic is done or the result is interpreted as an integer.
     ///
     /// Does not check whether `n` is in the range of [-2^31 +1...2^31 -1].
-    pub fn push_int_unchecked(self, n: i64) -> Self {
-        match n {
-            -1 => self.push_opcode(OP_PUSHNUM_NEG1),
-            0 => self.push_opcode(OP_PUSHBYTES_0),
-            1..=16 => self.push_opcode(Opcode::from(n as u8 + (OP_PUSHNUM_1.to_u8() - 1))),
-            _ => self.push_int_non_minimal(n),
-        }
+    pub fn push_int_unchecked(mut self, n: i64) -> Self {
+        self.0.push_int_unchecked(n);
+        self
     }
 
     /// Adds instructions to push an integer onto the stack without optimization.
     ///
     /// This uses the explicit encoding regardless of the availability of dedicated opcodes.
-    pub(in crate::blockdata) fn push_int_non_minimal(self, data: i64) -> Self {
-        let mut buf = [0u8; 8];
-        let len = write_scriptint(&mut buf, data);
-        self.push_slice_non_minimal(&<&PushBytes>::from(&buf)[..len])
+    pub(in crate::blockdata) fn push_int_non_minimal(mut self, data: i64) -> Self {
+        self.0.push_int_non_minimal(data);
+        self
     }
 
     /// Adds instructions to push some arbitrary data onto the stack.
-    pub fn push_slice<T: AsRef<PushBytes>>(self, data: T) -> Self {
+    pub fn push_slice<D: AsRef<PushBytes>>(self, data: D) -> Self {
         let bytes = data.as_ref().as_bytes();
         if bytes.len() == 1 && (bytes[0] == 0x81 || bytes[0] <= 16) {
             match bytes[0] {
-                0x81 => self.push_opcode(OP_PUSHNUM_NEG1),
+                0x81 => self.push_opcode(OP_1NEGATE),
                 0 => self.push_opcode(OP_PUSHBYTES_0),
-                1..=16 => self.push_opcode(Opcode::from(bytes[0] + (OP_PUSHNUM_1.to_u8() - 1))),
+                1..=16 => self.push_opcode(Opcode::from(bytes[0] + (OP_1.to_u8() - 1))),
                 _ => self, // unreachable arm
             }
         } else {
@@ -102,7 +93,7 @@ impl Builder {
     /// Standardness rules require push minimality according to [CheckMinimalPush] of core.
     ///
     /// [CheckMinimalPush]: <https://github.com/bitcoin/bitcoin/blob/99a4ddf5ab1b3e514d08b90ad8565827fda7b63b/src/script/script.cpp#L366>
-    pub fn push_slice_non_minimal<T: AsRef<PushBytes>>(mut self, data: T) -> Self {
+    pub fn push_slice_non_minimal<D: AsRef<PushBytes>>(mut self, data: D) -> Self {
         self.0.push_slice_non_minimal(data);
         self.1 = None;
         self
@@ -180,24 +171,24 @@ impl Builder {
     }
 
     /// Converts the `Builder` into `ScriptBuf`.
-    pub fn into_script(self) -> ScriptBuf { self.0 }
+    pub fn into_script(self) -> ScriptBuf<T> { self.0 }
 
     /// Converts the `Builder` into script bytes
     pub fn into_bytes(self) -> Vec<u8> { self.0.into() }
 
     /// Returns the internal script
-    pub fn as_script(&self) -> &Script { &self.0 }
+    pub fn as_script(&self) -> &Script<T> { &self.0 }
 
     /// Returns script bytes
     pub fn as_bytes(&self) -> &[u8] { self.0.as_bytes() }
 }
 
-impl Default for Builder {
+impl<T> Default for Builder<T> {
     fn default() -> Self { Self::new() }
 }
 
 /// Constructs a new builder from an existing vector.
-impl From<Vec<u8>> for Builder {
+impl<T> From<Vec<u8>> for Builder<T> {
     fn from(v: Vec<u8>) -> Self {
         let script = ScriptBuf::from(v);
         let last_op = script.last_opcode();
@@ -205,10 +196,10 @@ impl From<Vec<u8>> for Builder {
     }
 }
 
-impl fmt::Display for Builder {
+impl<T> fmt::Display for Builder<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
 }
 
-impl fmt::Debug for Builder {
+impl<T> fmt::Debug for Builder<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> { fmt::Display::fmt(self, f) }
 }

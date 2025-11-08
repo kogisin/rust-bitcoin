@@ -6,7 +6,6 @@ use core::convert::Infallible;
 use core::fmt;
 
 use hex::error::{InvalidCharError, OddLengthStringError};
-use hex::DisplayHex as _;
 use internals::write_err;
 
 #[cfg(doc)]
@@ -55,7 +54,7 @@ impl From<ParseError> for DeserializeError {
 
 /// Error when consensus decoding from an `[IterReader]`.
 ///
-/// This is the same as a `DeserializeError` with an additional variant to return any error yealded
+/// This is the same as a `DeserializeError` with an additional variant to return any error yielded
 /// by the inner bytes iterator.
 #[derive(Debug)]
 pub enum DecodeError<E> {
@@ -100,7 +99,7 @@ impl<E: fmt::Debug + std::error::Error + 'static> std::error::Error for DecodeEr
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// And I/O error.
+    /// An I/O error.
     Io(io::Error),
     /// Error parsing encoded object.
     Parse(ParseError),
@@ -138,14 +137,14 @@ impl From<io::Error> for Error {
         use io::ErrorKind;
 
         match e.kind() {
-            ErrorKind::UnexpectedEof => Error::Parse(ParseError::MissingData),
-            _ => Error::Io(e),
+            ErrorKind::UnexpectedEof => Self::Parse(ParseError::MissingData),
+            _ => Self::Io(e),
         }
     }
 }
 
 impl From<ParseError> for Error {
-    fn from(e: ParseError) -> Self { Error::Parse(e) }
+    fn from(e: ParseError) -> Self { Self::Parse(e) }
 }
 
 /// Encoding is invalid.
@@ -168,8 +167,8 @@ pub enum ParseError {
         /// The invalid checksum.
         actual: [u8; 4],
     },
-    /// VarInt was encoded in a non-minimal way.
-    NonMinimalVarInt,
+    /// CompactSize was encoded in a non-minimal way.
+    NonMinimalCompactSize,
     /// Parsing error.
     ParseFailed(&'static str),
     /// Unsupported SegWit flag.
@@ -188,9 +187,12 @@ impl fmt::Display for ParseError {
             MissingData => write!(f, "missing data (early end of file or slice too short)"),
             OversizedVectorAllocation { requested: ref r, max: ref m } =>
                 write!(f, "allocation of oversized vector: requested {}, maximum {}", r, m),
-            InvalidChecksum { expected: ref e, actual: ref a } =>
-                write!(f, "invalid checksum: expected {:x}, actual {:x}", e.as_hex(), a.as_hex()),
-            NonMinimalVarInt => write!(f, "non-minimal varint"),
+            InvalidChecksum { expected: ref e, actual: ref a } => write!(
+                f,
+                "invalid checksum: expected {:02x}{:02x}{:02x}{:02x}, actual {:02x}{:02x}{:02x}{:02x}",
+                e[0], e[1], e[2], e[3], a[0], a[1], a[2], a[3],
+            ),
+            NonMinimalCompactSize => write!(f, "non-minimal compact size"),
             ParseFailed(ref s) => write!(f, "parse failed: {}", s),
             UnsupportedSegwitFlag(ref swflag) =>
                 write!(f, "unsupported SegWit version: {}", swflag),
@@ -207,7 +209,7 @@ impl std::error::Error for ParseError {
             MissingData
             | OversizedVectorAllocation { .. }
             | InvalidChecksum { .. }
-            | NonMinimalVarInt
+            | NonMinimalCompactSize
             | ParseFailed(_)
             | UnsupportedSegwitFlag(_) => None,
         }
@@ -256,4 +258,45 @@ impl From<OddLengthStringError> for FromHexError {
 // This whole variant should go away because of the inner string.
 pub(crate) fn parse_failed_error(msg: &'static str) -> Error {
     Error::Parse(ParseError::ParseFailed(msg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_checksum_display() {
+        let e = ParseError::InvalidChecksum {
+            expected: [0xde, 0xad, 0xbe, 0xef],
+            actual: [0xca, 0xfe, 0xba, 0xbe],
+        };
+
+        let want = "invalid checksum: expected deadbeef, actual cafebabe";
+        let got = format!("{}", e);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn invalid_checksum_display_expected_leading_zeros() {
+        let e = ParseError::InvalidChecksum {
+            expected: [0x00, 0x00, 0x00, 0x0f],
+            actual: [0xca, 0xfe, 0xba, 0xbe],
+        };
+
+        let want = "invalid checksum: expected 0000000f, actual cafebabe";
+        let got = format!("{}", e);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn invalid_checksum_display_actual_leading_zeros() {
+        let e = ParseError::InvalidChecksum {
+            expected: [0xde, 0xad, 0xbe, 0xef],
+            actual: [0x00, 0x00, 0x00, 0x0e],
+        };
+
+        let want = "invalid checksum: expected deadbeef, actual 0000000e";
+        let got = format!("{}", e);
+        assert_eq!(got, want);
+    }
 }

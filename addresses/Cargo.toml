@@ -9,7 +9,7 @@ categories = ["cryptography::cryptocurrencies"]
 keywords = ["bitcoin", "types"]
 readme = "README.md"
 edition = "2021"
-rust-version = "1.63.0"
+rust-version = "1.74.0"
 exclude = ["tests", "contrib"]
 
 [features]
@@ -24,3 +24,6 @@ alloc = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.clippy]
+use_self = "warn"

@@ -5,12 +5,17 @@
 //! This module describes network messages which are used for passing
 //! Bitcoin data (blocks and transactions) around.
 
+use alloc::vec::Vec;
+
+#[cfg(feature = "arbitrary")]
+use arbitrary::{Arbitrary, Unstructured};
 use bitcoin::block::BlockHash;
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
 use bitcoin::transaction::{Txid, Wtxid};
 use io::{BufRead, Write};
 
 use crate::consensus::impl_consensus_encoding;
+use crate::ProtocolVersion;
 
 /// An inventory item.
 #[derive(PartialEq, Eq, Clone, Debug, Copy, Hash, PartialOrd, Ord)]
@@ -40,19 +45,19 @@ pub enum Inventory {
 }
 
 impl Inventory {
-    /// Return the item value represented as a SHA256-d hash.
+    /// Returns the item value represented as a SHA256-d hash.
     ///
     /// Returns [None] only for [Inventory::Error] who's hash value is meaningless.
     pub fn network_hash(&self) -> Option<[u8; 32]> {
         match self {
-            Inventory::Error(_) => None,
-            Inventory::Transaction(t) => Some(t.to_byte_array()),
-            Inventory::Block(b) => Some(b.to_byte_array()),
-            Inventory::CompactBlock(b) => Some(b.to_byte_array()),
-            Inventory::WTx(t) => Some(t.to_byte_array()),
-            Inventory::WitnessTransaction(t) => Some(t.to_byte_array()),
-            Inventory::WitnessBlock(b) => Some(b.to_byte_array()),
-            Inventory::Unknown { hash, .. } => Some(*hash),
+            Self::Error(_) => None,
+            Self::Transaction(t) => Some(t.to_byte_array()),
+            Self::Block(b) => Some(b.to_byte_array()),
+            Self::CompactBlock(b) => Some(b.to_byte_array()),
+            Self::WTx(t) => Some(t.to_byte_array()),
+            Self::WitnessTransaction(t) => Some(t.to_byte_array()),
+            Self::WitnessBlock(b) => Some(b.to_byte_array()),
+            Self::Unknown { hash, .. } => Some(*hash),
         }
     }
 }
@@ -66,14 +71,14 @@ impl Encodable for Inventory {
             };
         }
         Ok(match *self {
-            Inventory::Error(_) => encode_inv!(0, [0; 32]),
-            Inventory::Transaction(ref t) => encode_inv!(1, t),
-            Inventory::Block(ref b) => encode_inv!(2, b),
-            Inventory::CompactBlock(ref b) => encode_inv!(4, b),
-            Inventory::WTx(ref w) => encode_inv!(5, w),
-            Inventory::WitnessTransaction(ref t) => encode_inv!(0x40000001, t),
-            Inventory::WitnessBlock(ref b) => encode_inv!(0x40000002, b),
-            Inventory::Unknown { inv_type: t, hash: ref d } => encode_inv!(t, d),
+            Self::Error(ref e) => encode_inv!(0, e),
+            Self::Transaction(ref t) => encode_inv!(1, t),
+            Self::Block(ref b) => encode_inv!(2, b),
+            Self::CompactBlock(ref b) => encode_inv!(4, b),
+            Self::WTx(ref w) => encode_inv!(5, w),
+            Self::WitnessTransaction(ref t) => encode_inv!(0x40000001, t),
+            Self::WitnessBlock(ref b) => encode_inv!(0x40000002, b),
+            Self::Unknown { inv_type: t, hash: ref d } => encode_inv!(t, d),
         })
     }
 }
@@ -83,14 +88,14 @@ impl Decodable for Inventory {
     fn consensus_decode<R: BufRead + ?Sized>(r: &mut R) -> Result<Self, encode::Error> {
         let inv_type: u32 = Decodable::consensus_decode(r)?;
         Ok(match inv_type {
-            0 => Inventory::Error(Decodable::consensus_decode(r)?),
-            1 => Inventory::Transaction(Decodable::consensus_decode(r)?),
-            2 => Inventory::Block(Decodable::consensus_decode(r)?),
-            4 => Inventory::CompactBlock(Decodable::consensus_decode(r)?),
-            5 => Inventory::WTx(Decodable::consensus_decode(r)?),
-            0x40000001 => Inventory::WitnessTransaction(Decodable::consensus_decode(r)?),
-            0x40000002 => Inventory::WitnessBlock(Decodable::consensus_decode(r)?),
-            tp => Inventory::Unknown { inv_type: tp, hash: Decodable::consensus_decode(r)? },
+            0 => Self::Error(Decodable::consensus_decode(r)?),
+            1 => Self::Transaction(Decodable::consensus_decode(r)?),
+            2 => Self::Block(Decodable::consensus_decode(r)?),
+            4 => Self::CompactBlock(Decodable::consensus_decode(r)?),
+            5 => Self::WTx(Decodable::consensus_decode(r)?),
+            0x40000001 => Self::WitnessTransaction(Decodable::consensus_decode(r)?),
+            0x40000002 => Self::WitnessBlock(Decodable::consensus_decode(r)?),
+            tp => Self::Unknown { inv_type: tp, hash: Decodable::consensus_decode(r)? },
         })
     }
 }
@@ -101,7 +106,7 @@ impl Decodable for Inventory {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct GetBlocksMessage {
     /// The protocol version
-    pub version: u32,
+    pub version: ProtocolVersion,
     /// Locator hashes --- ordered newest to oldest. The remote peer will
     /// reply with its longest known chain, starting from a locator hash
     /// if possible and block 1 otherwise.
@@ -114,7 +119,7 @@ pub struct GetBlocksMessage {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct GetHeadersMessage {
     /// The protocol version
-    pub version: u32,
+    pub version: ProtocolVersion,
     /// Locator hashes --- ordered newest to oldest. The remote peer will
     /// reply with its longest known chain, starting from a locator hash
     /// if possible and block 1 otherwise.
@@ -123,23 +128,47 @@ pub struct GetHeadersMessage {
     pub stop_hash: BlockHash,
 }
 
-impl GetBlocksMessage {
-    /// Construct a new `getblocks` message
-    pub fn new(locator_hashes: Vec<BlockHash>, stop_hash: BlockHash) -> GetBlocksMessage {
-        GetBlocksMessage { version: crate::PROTOCOL_VERSION, locator_hashes, stop_hash }
-    }
-}
-
 impl_consensus_encoding!(GetBlocksMessage, version, locator_hashes, stop_hash);
 
-impl GetHeadersMessage {
-    /// Construct a new `getheaders` message
-    pub fn new(locator_hashes: Vec<BlockHash>, stop_hash: BlockHash) -> GetHeadersMessage {
-        GetHeadersMessage { version: crate::PROTOCOL_VERSION, locator_hashes, stop_hash }
+impl_consensus_encoding!(GetHeadersMessage, version, locator_hashes, stop_hash);
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for GetHeadersMessage {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            version: u.arbitrary()?,
+            locator_hashes: Vec::<BlockHash>::arbitrary(u)?,
+            stop_hash: u.arbitrary()?,
+        })
     }
 }
 
-impl_consensus_encoding!(GetHeadersMessage, version, locator_hashes, stop_hash);
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for GetBlocksMessage {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            version: u.arbitrary()?,
+            locator_hashes: Vec::<BlockHash>::arbitrary(u)?,
+            stop_hash: u.arbitrary()?,
+        })
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for Inventory {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        match u.int_in_range(0..=7)? {
+            0 => Ok(Self::Error(u.arbitrary()?)),
+            1 => Ok(Self::Transaction(u.arbitrary()?)),
+            2 => Ok(Self::Block(u.arbitrary()?)),
+            3 => Ok(Self::CompactBlock(u.arbitrary()?)),
+            4 => Ok(Self::WTx(u.arbitrary()?)),
+            5 => Ok(Self::WitnessTransaction(u.arbitrary()?)),
+            6 => Ok(Self::WitnessBlock(u.arbitrary()?)),
+            _ => Ok(Self::Unknown { inv_type: u.arbitrary()?, hash: u.arbitrary()? }),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -156,7 +185,7 @@ mod tests {
         let decode: Result<GetBlocksMessage, _> = deserialize(&from_sat);
         assert!(decode.is_ok());
         let real_decode = decode.unwrap();
-        assert_eq!(real_decode.version, 70002);
+        assert_eq!(real_decode.version.0, 70002);
         assert_eq!(real_decode.locator_hashes.len(), 1);
         assert_eq!(serialize(&real_decode.locator_hashes[0]), genhash);
         assert_eq!(real_decode.stop_hash, BlockHash::GENESIS_PREVIOUS_BLOCK_HASH);
@@ -172,7 +201,7 @@ mod tests {
         let decode: Result<GetHeadersMessage, _> = deserialize(&from_sat);
         assert!(decode.is_ok());
         let real_decode = decode.unwrap();
-        assert_eq!(real_decode.version, 70002);
+        assert_eq!(real_decode.version.0, 70002);
         assert_eq!(real_decode.locator_hashes.len(), 1);
         assert_eq!(serialize(&real_decode.locator_hashes[0]), genhash);
         assert_eq!(real_decode.stop_hash, BlockHash::GENESIS_PREVIOUS_BLOCK_HASH);

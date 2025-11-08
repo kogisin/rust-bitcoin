@@ -9,7 +9,7 @@ use NumOpResult as R;
 
 use super::{Amount, SignedAmount};
 use crate::internal_macros::{impl_div_assign, impl_mul_assign};
-use crate::{MathOp, NumOpError, NumOpResult, OptionExt};
+use crate::result::{MathOp, NumOpError, NumOpResult, OptionExt};
 
 impl From<Amount> for NumOpResult<Amount> {
     fn from(a: Amount) -> Self { Self::Valid(a) }
@@ -253,48 +253,124 @@ impl ops::Neg for SignedAmount {
     }
 }
 
-impl core::iter::Sum<NumOpResult<Amount>> for NumOpResult<Amount> {
+impl core::iter::Sum<Self> for NumOpResult<Amount> {
     fn sum<I>(iter: I) -> Self
     where
-        I: Iterator<Item = NumOpResult<Amount>>,
+        I: Iterator<Item = Self>,
     {
-        iter.fold(R::Valid(Amount::ZERO), |acc, amount| match (acc, amount) {
-            (R::Valid(lhs), R::Valid(rhs)) => lhs + rhs,
-            (_, _) => R::Error(NumOpError::while_doing(MathOp::Add)),
+        iter.fold(Self::Valid(Amount::ZERO), |acc, amount| match (acc, amount) {
+            (Self::Valid(lhs), Self::Valid(rhs)) => lhs + rhs,
+            (_, _) => Self::Error(NumOpError::while_doing(MathOp::Add)),
         })
     }
 }
-impl<'a> core::iter::Sum<&'a NumOpResult<Amount>> for NumOpResult<Amount> {
+impl<'a> core::iter::Sum<&'a Self> for NumOpResult<Amount> {
     fn sum<I>(iter: I) -> Self
     where
-        I: Iterator<Item = &'a NumOpResult<Amount>>,
+        I: Iterator<Item = &'a Self>,
     {
-        iter.fold(R::Valid(Amount::ZERO), |acc, amount| match (acc, amount) {
-            (R::Valid(lhs), R::Valid(rhs)) => lhs + rhs,
-            (_, _) => R::Error(NumOpError::while_doing(MathOp::Add)),
+        iter.fold(Self::Valid(Amount::ZERO), |acc, amount| match (acc, amount) {
+            (Self::Valid(lhs), Self::Valid(rhs)) => lhs + rhs,
+            (_, _) => Self::Error(NumOpError::while_doing(MathOp::Add)),
         })
     }
 }
 
-impl core::iter::Sum<NumOpResult<SignedAmount>> for NumOpResult<SignedAmount> {
+impl core::iter::Sum<Self> for NumOpResult<SignedAmount> {
     fn sum<I>(iter: I) -> Self
     where
-        I: Iterator<Item = NumOpResult<SignedAmount>>,
+        I: Iterator<Item = Self>,
     {
-        iter.fold(R::Valid(SignedAmount::ZERO), |acc, amount| match (acc, amount) {
-            (R::Valid(lhs), R::Valid(rhs)) => lhs + rhs,
-            (_, _) => R::Error(NumOpError::while_doing(MathOp::Add)),
+        iter.fold(Self::Valid(SignedAmount::ZERO), |acc, amount| match (acc, amount) {
+            (Self::Valid(lhs), Self::Valid(rhs)) => lhs + rhs,
+            (_, _) => Self::Error(NumOpError::while_doing(MathOp::Add)),
         })
     }
 }
-impl<'a> core::iter::Sum<&'a NumOpResult<SignedAmount>> for NumOpResult<SignedAmount> {
+impl<'a> core::iter::Sum<&'a Self> for NumOpResult<SignedAmount> {
     fn sum<I>(iter: I) -> Self
     where
-        I: Iterator<Item = &'a NumOpResult<SignedAmount>>,
+        I: Iterator<Item = &'a Self>,
     {
-        iter.fold(R::Valid(SignedAmount::ZERO), |acc, amount| match (acc, amount) {
-            (R::Valid(lhs), R::Valid(rhs)) => lhs + rhs,
-            (_, _) => R::Error(NumOpError::while_doing(MathOp::Add)),
+        iter.fold(Self::Valid(SignedAmount::ZERO), |acc, amount| match (acc, amount) {
+            (Self::Valid(lhs), Self::Valid(rhs)) => lhs + rhs,
+            (_, _) => Self::Error(NumOpError::while_doing(MathOp::Add)),
         })
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sum_amount_results() {
+        let amounts = [
+            NumOpResult::Valid(Amount::from_sat_u32(100)),
+            NumOpResult::Valid(Amount::from_sat_u32(200)),
+            NumOpResult::Valid(Amount::from_sat_u32(300)),
+        ];
+
+        let sum: NumOpResult<Amount> = amounts.into_iter().sum();
+        assert_eq!(sum, NumOpResult::Valid(Amount::from_sat_u32(600)));
+    }
+
+    #[test]
+    fn test_sum_amount_results_with_references() {
+        let amounts = [
+            NumOpResult::Valid(Amount::from_sat_u32(100)),
+            NumOpResult::Valid(Amount::from_sat_u32(200)),
+            NumOpResult::Valid(Amount::from_sat_u32(300)),
+        ];
+
+        let sum: NumOpResult<Amount> = amounts.iter().sum();
+        assert_eq!(sum, NumOpResult::Valid(Amount::from_sat_u32(600)));
+    }
+
+    #[test]
+    fn test_sum_amount_with_error_propagation() {
+        let amounts = [
+            NumOpResult::Valid(Amount::from_sat_u32(100)),
+            NumOpResult::Error(NumOpError::while_doing(MathOp::Add)),
+            NumOpResult::Valid(Amount::from_sat_u32(200)),
+        ];
+
+        let sum: NumOpResult<Amount> = amounts.into_iter().sum();
+        assert!(matches!(sum, NumOpResult::Error(_)));
+    }
+
+    #[test]
+    fn test_sum_signed_amount_results() {
+        let amounts = [
+            NumOpResult::Valid(SignedAmount::from_sat_i32(100)),
+            NumOpResult::Valid(SignedAmount::from_sat_i32(-50)),
+            NumOpResult::Valid(SignedAmount::from_sat_i32(200)),
+        ];
+
+        let sum: NumOpResult<SignedAmount> = amounts.into_iter().sum();
+        assert_eq!(sum, NumOpResult::Valid(SignedAmount::from_sat_i32(250)));
+    }
+
+    #[test]
+    fn test_sum_signed_amount_results_with_references() {
+        let amounts = [
+            NumOpResult::Valid(SignedAmount::from_sat_i32(100)),
+            NumOpResult::Valid(SignedAmount::from_sat_i32(-50)),
+            NumOpResult::Valid(SignedAmount::from_sat_i32(200)),
+        ];
+
+        let sum: NumOpResult<SignedAmount> = amounts.iter().sum();
+        assert_eq!(sum, NumOpResult::Valid(SignedAmount::from_sat_i32(250)));
+    }
+
+    #[test]
+    fn test_sum_signed_amount_with_error_propagation() {
+        let amounts = [
+            NumOpResult::Valid(SignedAmount::from_sat_i32(100)),
+            NumOpResult::Error(NumOpError::while_doing(MathOp::Add)),
+            NumOpResult::Valid(SignedAmount::from_sat_i32(200)),
+        ];
+
+        let sum: NumOpResult<SignedAmount> = amounts.into_iter().sum();
+        assert!(matches!(sum, NumOpResult::Error(_)));
     }
 }
